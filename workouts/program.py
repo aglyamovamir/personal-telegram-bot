@@ -1,25 +1,104 @@
 WORKOUTS = {
     "A": [
-        "Жим лежа",
-        "Присед со штангой",
-        "Тяга штанги в наклоне",
-        "Икры",
-        "Пресс",
+        {
+            "name": "Жим лежа",
+            "warmup": [
+                {"weight": 20, "reps": 10},
+                {"weight": 50, "reps": 10},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Присед со штангой",
+            "warmup": [
+                {"weight": 20, "reps": 10},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Тяга штанги в наклоне",
+            "warmup": [
+                {"weight": 40, "reps": 12},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Икры",
+            "warmup": [
+                {"weight": 20, "reps": 15},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Пресс",
+            "warmup": [],
+            "working_sets": 3,
+        },
     ],
-    
+
     "B": [
-        "Подтягивания",
-        "Румынская тяга",
-        "Жим гантелей на наклонной скамье",
-        "Разведения в стороны",
-        "Бицепс",
-        "Трицепс",
+        {
+            "name": "Подтягивания",
+            "warmup": [],
+            "working_sets": 3,
+        },
+        {
+            "name": "Румынская тяга",
+            "warmup": [
+                {"weight": 20, "reps": 10},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Жим гантелей на наклонной скамье",
+            "warmup": [
+                {"weight": 16, "reps": 8},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Разведения в стороны",
+            "warmup": [],
+            "working_sets": 3,
+        },
+        {
+            "name": "Бицепс",
+            "warmup": [],
+            "working_sets": 3,
+        },
+        {
+            "name": "Трицепс",
+            "warmup": [
+                {"weight": 15.8, "reps": 8},
+            ],
+            "working_sets": 3,
+        },
     ],
-    
+
     "C": [
-        "Тяга верхнего блока",
-        "Брусья",
-        "Жим ногами",
-        "Пресс",
+        {
+            "name": "Тяга верхнего блока",
+            "warmup": [
+                {"weight": 32, "reps": 8},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Брусья",
+            "warmup": [],
+            "working_sets": 3,
+        },
+        {
+            "name": "Жим ногами",
+            "warmup": [
+                {"weight": 40, "reps": 8},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Пресс",
+            "warmup": [],
+            "working_sets": 3,
+        },
     ],
 }
