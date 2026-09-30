@@ -84,15 +84,34 @@ WORKOUTS = {
             "working_sets": 3,
         },
         {
+            "name": "Жим ногами",
+            "warmup": [
+                {"weight": 40, "reps": 8},
+            ],
+            "working_sets": 3,
+        },
+        {
             "name": "Брусья",
             "warmup": [],
             "working_sets": 3,
         },
         {
-            "name": "Жим ногами",
+            "name": "Разведения назад",
             "warmup": [
-                {"weight": 40, "reps": 8},
+                {"weight": 18, "reps": 8},
             ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Разгибание рук с гантелью из-за головы",
+            "warmup": [
+                {"weight": 12, "reps": 12},
+            ],
+            "working_sets": 3,
+        },
+        {
+            "name": "Предплечья",
+            "warmup": [],
             "working_sets": 3,
         },
         {

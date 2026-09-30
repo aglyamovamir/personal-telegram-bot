@@ -107,3 +107,39 @@ def finish_workout(workout_id):
 
     connection.commit()
     connection.close()
+    
+def get_last_workout():
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT id, workout_type, started_at, finished_at
+        FROM workouts
+        WHERE finished_at IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+    """)
+
+    workout = cursor.fetchone()
+
+    connection.close()
+
+    return workout
+
+
+def get_workout_sets(workout_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT exercise, set_number, weight, reps
+        FROM workout_sets
+        WHERE workout_id = ?
+        ORDER BY id
+    """, (workout_id,))
+
+    sets = cursor.fetchall()
+
+    connection.close()
+
+    return sets
