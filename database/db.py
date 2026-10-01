@@ -23,16 +23,23 @@ def init_db():
     """)
 
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS workout_sets (
+        CREATE TABLE IF NOT EXISTS daily_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            workout_id INTEGER NOT NULL,
-            exercise TEXT NOT NULL,
-            set_number INTEGER NOT NULL,
-            is_warmup INTEGER NOT NULL DEFAULT 0,
-            weight REAL NOT NULL,
-            reps INTEGER NOT NULL,
+            date TEXT NOT NULL UNIQUE,
+
+            sleep_start TEXT,
+            wake_time TEXT,
+            sleep_duration_minutes INTEGER,
+            sleep_score INTEGER,
+
+            productivity REAL,
+            stress INTEGER,
+            mood INTEGER,
+            steps INTEGER,
+            screen_time_minutes INTEGER,
+
             created_at TEXT NOT NULL,
-            FOREIGN KEY (workout_id) REFERENCES workouts(id)
+            updated_at TEXT NOT NULL
         )
     """)
 
@@ -143,3 +150,135 @@ def get_workout_sets(workout_id):
     connection.close()
 
     return sets
+
+def save_morning_metrics(
+    date,
+    sleep_start,
+    wake_time,
+    sleep_duration_minutes,
+    sleep_score
+):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    cursor.execute("""
+        INSERT INTO daily_metrics (
+            date,
+            sleep_start,
+            wake_time,
+            sleep_duration_minutes,
+            sleep_score,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+            sleep_start = excluded.sleep_start,
+            wake_time = excluded.wake_time,
+            sleep_duration_minutes = excluded.sleep_duration_minutes,
+            sleep_score = excluded.sleep_score,
+            updated_at = excluded.updated_at
+    """, (
+        date,
+        sleep_start,
+        wake_time,
+        sleep_duration_minutes,
+        sleep_score,
+        now,
+        now
+    ))
+
+    connection.commit()
+    connection.close()
+
+
+def save_evening_metrics(
+    date,
+    productivity,
+    stress,
+    mood,
+    steps,
+    screen_time_minutes
+):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    cursor.execute("""
+        INSERT INTO daily_metrics (
+            date,
+            productivity,
+            stress,
+            mood,
+            steps,
+            screen_time_minutes,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+            productivity = excluded.productivity,
+            stress = excluded.stress,
+            mood = excluded.mood,
+            steps = excluded.steps,
+            screen_time_minutes = excluded.screen_time_minutes,
+            updated_at = excluded.updated_at
+    """, (
+        date,
+        productivity,
+        stress,
+        mood,
+        steps,
+        screen_time_minutes,
+        now,
+        now
+    ))
+
+    connection.commit()
+    connection.close()
+
+def get_daily_metrics(date):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            date,
+            sleep_start,
+            wake_time,
+            sleep_duration_minutes,
+            sleep_score,
+            productivity,
+            stress,
+            mood,
+            steps,
+            screen_time_minutes
+        FROM daily_metrics
+        WHERE date = ?
+    """, (date,))
+
+    metrics = cursor.fetchone()
+
+    connection.close()
+
+    return metrics
+
+def has_workout_on_date(date):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM workouts
+        WHERE DATE(started_at) = ?
+        AND finished_at IS NOT NULL
+    """, (date,))
+
+    count = cursor.fetchone()[0]
+
+    connection.close()
+
+    return count > 0

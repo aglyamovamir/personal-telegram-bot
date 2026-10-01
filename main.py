@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from database.db import init_db
 from handlers.start import router as start_router
-
+from handlers.daily import router as daily_router
 
 load_dotenv()
 
@@ -17,7 +17,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 dp.include_router(start_router)
-
+dp.include_router(daily_router)
 
 async def main():
     init_db()
