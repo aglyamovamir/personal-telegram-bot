@@ -1,7 +1,7 @@
 import sqlite3
 
 
-DB_PATH = "database/database.db"
+DB_PATH = "/data/database.db"
 
 
 workouts = [

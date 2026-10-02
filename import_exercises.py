@@ -3,7 +3,7 @@ import sqlite3
 
 
 JSON_PATH = "data/repdb/exercises.json"
-DB_PATH = "database/database.db"
+DB_PATH = "/data/database.db"
 
 
 def main():
