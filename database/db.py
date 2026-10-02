@@ -70,7 +70,7 @@ def create_workout(workout_type):
     return workout_id
 
 
-def save_set(workout_id, exercise, set_number, weight, reps):
+def save_set(workout_id, exercise, set_number, weight, reps, is_warmup=False):
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -89,7 +89,7 @@ def save_set(workout_id, exercise, set_number, weight, reps):
         workout_id,
         exercise,
         set_number,
-        0,
+        1 if is_warmup else 0,
         weight,
         reps,
         datetime.now().isoformat(timespec="seconds")
@@ -137,18 +137,14 @@ def get_last_workout():
 def get_workout_sets(workout_id):
     connection = get_connection()
     cursor = connection.cursor()
-
     cursor.execute("""
-        SELECT exercise, set_number, weight, reps
+        SELECT exercise, set_number, is_warmup, weight, reps
         FROM workout_sets
         WHERE workout_id = ?
         ORDER BY id
     """, (workout_id,))
-
     sets = cursor.fetchall()
-
     connection.close()
-
     return sets
 
 def save_morning_metrics(
@@ -282,3 +278,28 @@ def has_workout_on_date(date):
     connection.close()
 
     return count > 0
+
+def get_last_exercise_sets(exercise):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT ws.weight, ws.reps
+        FROM workout_sets ws
+        JOIN workouts w ON w.id = ws.workout_id
+        WHERE ws.exercise = ?
+          AND w.finished_at IS NOT NULL
+          AND w.id = (
+              SELECT MAX(ws2.workout_id)
+              FROM workout_sets ws2
+              JOIN workouts w2 ON w2.id = ws2.workout_id
+              WHERE ws2.exercise = ?
+                AND w2.finished_at IS NOT NULL
+          )
+        ORDER BY ws.id
+    """, (exercise, exercise))
+
+    sets = cursor.fetchall()
+
+    connection.close()
+    return sets

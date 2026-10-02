@@ -1,19 +1,20 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
 
-main_menu = InlineKeyboardMarkup(
-    inline_keyboard=[
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
         [
-            InlineKeyboardButton(
-                text="🏋️ Тренировка",
-                callback_data="training"
-            )
+            KeyboardButton(text="🌅 Утро"),
+            KeyboardButton(text="🌙 Вечер")
         ],
         [
-            InlineKeyboardButton(
-                text="📊 История",
-                callback_data="history"
-            )
+            KeyboardButton(text="🏋️ Тренировка"),
+            KeyboardButton(text="📊 Сегодня")
+        ],
+        [
+            KeyboardButton(text="📚 История")
         ]
-    ]
+    ],
+    resize_keyboard=True,
+    is_persistent=True
 )
