@@ -43,6 +43,90 @@ def init_db():
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercises (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL UNIQUE,
+            name_en TEXT NOT NULL,
+            name_ru TEXT,
+            description_en TEXT,
+            description_ru TEXT,
+            category TEXT,
+            force_type TEXT,
+            mechanic TEXT,
+            difficulty TEXT,
+            equipment TEXT,
+            body_part TEXT,
+            met REAL,
+            is_unilateral INTEGER NOT NULL DEFAULT 0,
+            is_bodyweight INTEGER NOT NULL DEFAULT 0,
+            variation_group TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_muscles (
+            exercise_id INTEGER NOT NULL,
+            muscle TEXT NOT NULL,
+            muscle_type TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, muscle, muscle_type)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_goals (
+            exercise_id INTEGER NOT NULL,
+            goal TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, goal)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_tags (
+            exercise_id INTEGER NOT NULL,
+            tag TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, tag)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_instructions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_id INTEGER NOT NULL,
+            language TEXT NOT NULL,
+            step_number INTEGER NOT NULL,
+            instruction TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, language, step_number)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_tips (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_id INTEGER NOT NULL,
+            language TEXT NOT NULL,
+            tip_number INTEGER NOT NULL,
+            tip TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, language, tip_number)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS exercise_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            exercise_id INTEGER NOT NULL,
+            view TEXT NOT NULL,
+            path TEXT NOT NULL,
+            FOREIGN KEY (exercise_id) REFERENCES exercises(id),
+            UNIQUE (exercise_id, view)
+        )
+    """)
+    
     connection.commit()
     connection.close()
 
