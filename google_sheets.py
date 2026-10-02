@@ -68,6 +68,8 @@ def format_daily_row(metrics):
         minutes_to_time(screen_time_minutes),
         workout,
         productivity if productivity is not None else "",
+        stress if stress is not None else "",
+        mood if mood is not None else "",
     ]
 
 
