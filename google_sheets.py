@@ -14,23 +14,17 @@ SPREADSHEET_ID = "1zqO0E-zAHgr8pAB0Lqcb-txqEnSbbRNq_x69MATF2dM"
 def get_sheet():
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 
-    if credentials_b64:
-        credentials_json = base64.b64decode(credentials_b64).decode("utf-8")
+    print("GOOGLE_CREDENTIALS_B64 exists:", bool(credentials_b64))
 
-        creds = Credentials.from_service_account_info(
-            json.loads(credentials_json),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-    else:
-        credentials_file = os.path.join(
-            "credentials",
-            os.listdir("credentials")[0]
-        )
+    if not credentials_b64:
+        raise RuntimeError("GOOGLE_CREDENTIALS_B64 is not set")
 
-        creds = Credentials.from_service_account_file(
-            credentials_file,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
+    credentials_json = base64.b64decode(credentials_b64).decode("utf-8")
+
+    creds = Credentials.from_service_account_info(
+        json.loads(credentials_json),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
 
     client = gspread.authorize(creds)
 
