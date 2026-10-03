@@ -2,10 +2,7 @@ import sqlite3
 from datetime import datetime
 import os
 
-if os.path.exists("/data"):
-    DB_PATH = "/data/database.db"
-else:
-    DB_PATH = "database/database.db"
+DB_PATH = os.getenv("DB_PATH", "database/database.db")
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
