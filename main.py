@@ -1,6 +1,8 @@
 import asyncio
 import os
 
+print("=== CURRENT MAIN.PY VERSION ===")
+
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
