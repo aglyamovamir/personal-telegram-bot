@@ -2,7 +2,12 @@ import sqlite3
 from datetime import datetime
 
 
-DB_PATH = "/data/database.db"
+import os
+
+if os.path.exists("/data"):
+    DB_PATH = "/data/database.db"
+else:
+    DB_PATH = "database/database.db"
 
 
 def get_connection():
@@ -19,6 +24,20 @@ def init_db():
             workout_type TEXT NOT NULL,
             started_at TEXT NOT NULL,
             finished_at TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS workout_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workout_id INTEGER NOT NULL,
+            exercise TEXT NOT NULL,
+            set_number INTEGER NOT NULL,
+            is_warmup INTEGER NOT NULL DEFAULT 0,
+            weight REAL NOT NULL,
+            reps INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (workout_id) REFERENCES workouts(id)
         )
     """)
 
@@ -198,7 +217,25 @@ def finish_workout(workout_id):
 
     connection.commit()
     connection.close()
-    
+
+def get_last_workout_by_type(workout_type):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT id, workout_type, started_at, finished_at
+        FROM workouts
+        WHERE workout_type = ?
+          AND finished_at IS NOT NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+    """, (workout_type,))
+
+    workout = cursor.fetchone()
+    connection.close()
+
+    return workout
+
 def get_last_workout():
     connection = get_connection()
     cursor = connection.cursor()

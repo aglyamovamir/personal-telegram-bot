@@ -9,6 +9,7 @@ from database.db import (
     create_workout,
     save_set,
     finish_workout,
+    get_last_workout_by_type,
     get_last_workout,
     get_workout_sets,
     get_last_exercise_sets,
@@ -25,6 +26,7 @@ from states.workout import WorkoutState
 from workouts.program import WORKOUTS
 from handlers.daily import morning_start, evening_start
 from handlers.today import today_handler
+from keyboards.history_menu import history_menu
 
 router = Router()
 
@@ -61,28 +63,40 @@ async def training_menu_button(message: Message):
 
 @router.message(F.text == "📚 История")
 async def history_menu_button(message: Message):
-    workout = get_last_workout()
+    await message.answer(
+        "Какую тренировку посмотреть?",
+        reply_markup=history_menu
+    )
+
+@router.callback_query(
+    lambda callback: callback.data.startswith("history_")
+)
+async def history_selected(callback: CallbackQuery):
+    workout_type = callback.data.replace("history_", "")
+
+    workout = get_last_workout_by_type(workout_type)
 
     if workout is None:
-        await message.answer(
-            "Завершённых тренировок пока нет."
+        await callback.message.answer(
+            f"Завершённых тренировок типа {workout_type} пока нет."
         )
+        await callback.answer()
         return
 
     workout_id, workout_type, started_at, finished_at = workout
+
     sets = get_workout_sets(workout_id)
 
     started = datetime.fromisoformat(started_at)
     finished = datetime.fromisoformat(finished_at)
 
     text = (
-        f"📊 Последняя тренировка — {workout_type}\n\n"
+        f"📊 Последняя тренировка {workout_type}\n\n"
         f"Начало: {started.strftime('%d.%m.%Y %H:%M')}\n"
-        f"Окончание: {finished.strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"Окончание: {finished.strftime('%d.%m.%Y %H:%M')}\n"
     )
 
     current_exercise = None
-
     warmup_number = 0
     working_number = 0
 
@@ -91,19 +105,28 @@ async def history_menu_button(message: Message):
             current_exercise = exercise
             warmup_number = 0
             working_number = 0
+
             text += f"\n<b>{exercise}</b>\n"
 
         if is_warmup:
             warmup_number += 1
-            text += f"Разминка {warmup_number}: {weight:g} кг × {reps}\n"
+            text += (
+                f"Разминка {warmup_number}: "
+                f"{weight:g} кг × {reps}\n"
+            )
         else:
             working_number += 1
-            text += f"Рабочий {working_number}: {weight:g} кг × {reps}\n"
+            text += (
+                f"Рабочий {working_number}: "
+                f"{weight:g} кг × {reps}\n"
+            )
 
-    await message.answer(
+    await callback.message.answer(
         text,
         parse_mode="HTML"
     )
+
+    await callback.answer()
 
 
 @router.callback_query(lambda callback: callback.data == "training")
