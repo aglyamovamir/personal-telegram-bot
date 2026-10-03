@@ -1,7 +1,5 @@
 import sqlite3
 from datetime import datetime
-import shutil
-
 import os
 
 if os.path.exists("/data"):
@@ -9,18 +7,11 @@ if os.path.exists("/data"):
 else:
     DB_PATH = "database/database.db"
 
-def migrate_database_to_data():
-    # Рабочая база на Amvera хранится в /data.
-    # Ничего не копируем и не удаляем автоматически.
-    return
-
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
 
 def init_db():
-    migrate_database_to_data()
-
     connection = get_connection()
     cursor = connection.cursor()
 
