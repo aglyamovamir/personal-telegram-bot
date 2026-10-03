@@ -1,6 +1,6 @@
 import sqlite3
 from datetime import datetime
-
+import shutil
 
 import os
 
@@ -9,12 +9,51 @@ if os.path.exists("/data"):
 else:
     DB_PATH = "database/database.db"
 
+def migrate_database_to_data():
+    if DB_PATH != "/data/database.db":
+        return
+
+    source_db = os.path.abspath("database/database.db")
+
+    if not os.path.exists(source_db):
+        print("SOURCE DATABASE NOT FOUND:", source_db)
+        return
+
+    if not os.path.exists(DB_PATH):
+        print("No /data/database.db found. Copying local database...")
+        shutil.copy2(source_db, DB_PATH)
+        print("Database copied successfully.")
+        return
+
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type='table' AND name='workout_sets'
+    """)
+
+    workout_sets_exists = cursor.fetchone() is not None
+
+    connection.close()
+
+    if not workout_sets_exists:
+        print("Broken /data database detected.")
+        print("Replacing it with the current project database...")
+
+        os.remove(DB_PATH)
+        shutil.copy2(source_db, DB_PATH)
+
+        print("Database migration completed.")
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
 
 
 def init_db():
+    migrate_database_to_data()
+
     connection = get_connection()
     cursor = connection.cursor()
 
