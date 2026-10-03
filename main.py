@@ -34,9 +34,15 @@ dp.include_router(debug_router)
 
 async def main():
     init_db()
-
     print("DB_PATH:", DB_PATH)
-
+    print("DATA EXISTS:", os.path.exists("/data/database.db"))
+    print(
+        "DATA SIZE:",
+        os.path.getsize("/data/database.db")
+        if os.path.exists("/data/database.db")
+        else "NO FILE"
+    )
+    
     for workout_type in ("A", "B", "C"):
         workout = get_last_workout_by_type(workout_type)
         print(f"HISTORY {workout_type}:", workout)
