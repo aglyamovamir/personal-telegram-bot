@@ -15,15 +15,11 @@ from database.db import (
     get_last_exercise_sets,
 )
 
-from keyboards.set_type import (
-    set_type_menu,
-    working_set_menu,
-    exercise_finished_menu,
-)
 from keyboards.main_menu import main_menu
 from keyboards.workout_menu import workout_menu
 from states.workout import WorkoutState
 from workouts.program import WORKOUTS
+from workouts.parser import parse_exercise_input, format_parsed_sets
 from handlers.daily import morning_start, evening_start
 from handlers.today import today_handler
 from keyboards.history_menu import history_menu
@@ -152,11 +148,9 @@ async def workout_selected(callback: CallbackQuery, state):
         program_progress_index=0,
         postponed_exercises=[],
         exercise=first_exercise["name"],
-        set_number=1,
-        working_set_number=0,
-        warmup_count=0,
-        is_warmup=None
     )
+
+    await state.set_state(WorkoutState.waiting_for_exercise_input)
 
     previous_sets = get_last_exercise_sets(first_exercise["name"])
 
@@ -169,58 +163,14 @@ async def workout_selected(callback: CallbackQuery, state):
             previous_text += f"{weight:g} кг × {reps}\n"
 
     await callback.message.answer(
-        f"Выбрана тренировка {workout_name}.\n"
-        f"Первое упражнение — {first_exercise['name']}.\n"
+        f"Выбрана тренировка {workout_name}.\n\n"
+        f"Упражнение — {first_exercise['name']}.\n"
         f"{previous_text}\n"
-        f"Выберите тип первого подхода:",
-        reply_markup=set_type_menu
-    )
-
-    await callback.answer()
-
-@router.callback_query(lambda callback: callback.data == "set_warmup")
-async def choose_warmup(callback: CallbackQuery, state):
-    data = await state.get_data()
-
-    warmup_count = data.get("warmup_count", 0)
-
-    if warmup_count >= 3:
-        await callback.answer(
-            "Максимум 3 разминочных подхода.",
-            show_alert=True
-        )
-        return
-
-    await state.update_data(
-        is_warmup=True,
-        warmup_count=warmup_count + 1
-    )
-
-    await state.set_state(WorkoutState.choosing_weight)
-
-    await callback.message.answer(
-        f"🔥 Разминочный подход №{warmup_count + 1}.\n\n"
-        f"Введите вес в кг:"
-    )
-
-    await callback.answer()
-
-@router.callback_query(lambda callback: callback.data == "set_working")
-async def choose_working(callback: CallbackQuery, state):
-    data = await state.get_data()
-
-    working_set_number = data.get("working_set_number", 0) + 1
-
-    await state.update_data(
-        is_warmup=False,
-        working_set_number=working_set_number
-    )
-
-    await state.set_state(WorkoutState.choosing_weight)
-
-    await callback.message.answer(
-        f"💪 Рабочий подход №{working_set_number}.\n\n"
-        f"Введите вес в кг:"
+        f"Введите все подходы одним сообщением.\n\n"
+        f"Пример:\n"
+        f"20 10\n"
+        f"50 10\n\n"
+        f"60 9 3"
     )
 
     await callback.answer()
@@ -237,176 +187,82 @@ async def postpone_exercise(callback: CallbackQuery, state):
     if exercise_index not in postponed_exercises:
         postponed_exercises.append(exercise_index)
 
-    next_exercise_index = exercise_index + 1
-
-    await state.update_data(
-        program_progress_index=next_exercise_index
-    )
-
     await state.update_data(
         postponed_exercises=postponed_exercises
     )
 
-    if next_exercise_index >= len(WORKOUTS[workout]):
-        await callback.message.answer(
-            "Больше упражнений в программе нет.\n"
-            "Переходим к отложенным упражнениям."
-        )
-
-        next_exercise_index = postponed_exercises.pop(0)
-
-        await state.update_data(
-            postponed_exercises=postponed_exercises
-        )
-
-    next_exercise = WORKOUTS[workout][next_exercise_index]
-
-    await state.update_data(
-        exercise_index=next_exercise_index,
-        exercise=next_exercise["name"],
-        set_number=1,
-        warmup_count=0,
-        working_set_number=0,
-        is_warmup=None
-    )
-
-    previous_sets = get_last_exercise_sets(next_exercise["name"])
-
-    previous_text = ""
-
-    if previous_sets:
-        previous_text = "\nПрошлая тренировка:\n"
-
-        for weight, reps in previous_sets:
-            previous_text += f"{weight:g} кг × {reps}\n"
-
     await callback.message.answer(
         f"Упражнение отложено.\n\n"
-        f"Следующее упражнение — {next_exercise['name']}.\n"
-        f"{previous_text}\n"
-        f"Выберите тип первого подхода:",
-        reply_markup=set_type_menu
+        f"Идём дальше по программе."
+    )
+
+    await move_to_next_exercise(
+        callback.message,
+        state,
+        prefer_postponed=False
     )
 
     await callback.answer()
 
-@router.message(WorkoutState.choosing_weight)
-async def process_weight(message: Message, state):
+@router.message(WorkoutState.waiting_for_exercise_input)
+async def process_exercise_input(message: Message, state):
     try:
-        weight = float(message.text.replace(",", "."))
-    except ValueError:
+        sets = parse_exercise_input(message.text)
+    except ValueError as e:
         await message.answer(
-            "Не понял вес.\n"
-            "Введите только число, например: 52 или 52.5"
+            f"❌ Не удалось распознать подходы.\n\n"
+            f"{e}\n\n"
+            f"Пример правильного ввода:\n"
+            f"20 10\n"
+            f"50 10\n\n"
+            f"60 9 3"
         )
         return
 
-    if weight < 0:
-        await message.answer(
-            "Вес не может быть отрицательным.\n"
-            "Введите вес ещё раз:"
-        )
-        return
-
-    await state.update_data(weight=weight)
-    await state.set_state(WorkoutState.choosing_reps)
-
-    await message.answer(
-        f"Вес сохранён: {weight} кг.\n"
-        "Теперь введите количество повторений:"
-    )
-
-
-@router.message(WorkoutState.choosing_reps)
-async def process_reps(message: Message, state):
     data = await state.get_data()
 
     workout_id = data["workout_id"]
-    workout = data["workout"]
     exercise = data["exercise"]
-    exercise_index = data["exercise_index"]
-    set_number = data["set_number"]
-    weight = data["weight"]
 
-    is_warmup = data.get("is_warmup", False)
-    warmup_count = data.get("warmup_count", 0)
-    working_set_number = data.get("working_set_number", 0)
+    set_number = 1
 
-    try:
-        reps = int(message.text)
-    except ValueError:
-        await message.answer(
-            "Не понял количество повторений.\n"
-            "Введите целое число, например: 8 или 12"
-        )
-        return
-
-    if reps <= 0:
-        await message.answer(
-            "Количество повторений должно быть больше нуля.\n"
-            "Введите ещё раз:"
-        )
-        return
-
-    save_set(
-        workout_id=workout_id,
-        exercise=exercise,
-        set_number=set_number,
-        weight=float(weight),
-        reps=reps,
-        is_warmup=is_warmup
-    )
-
-    if is_warmup:
-        await message.answer(
-            f"🔥 Разминочный подход №{warmup_count} сохранён:\n\n"
-            f"{exercise}\n"
-            f"{weight:g} кг × {reps}\n\n"
-            f"Что дальше?",
-            reply_markup=set_type_menu
+    for item in sets:
+        save_set(
+            workout_id=workout_id,
+            exercise=exercise,
+            set_number=set_number,
+            weight=item["weight"],
+            reps=item["reps"],
+            is_warmup=item["is_warmup"],
         )
 
-        await state.update_data(
-            set_number=set_number + 1
-        )
-
-        return
+        set_number += 1
 
     await message.answer(
-        f"💪 Рабочий подход №{working_set_number} сохранён:\n\n"
-        f"{exercise}\n"
-        f"{weight:g} кг × {reps}"
+        f"✅ {exercise} сохранено.\n\n"
+        f"{format_parsed_sets(sets)}"
     )
 
     await state.update_data(
-        set_number=set_number + 1
+        set_number=set_number
     )
 
-    await message.answer(
-        "Что дальше?",
-        reply_markup=working_set_menu
-    )
+    await move_to_next_exercise(message, state)
 
-@router.callback_query(lambda callback: callback.data == "finish_exercise")
-async def finish_exercise(callback: CallbackQuery, state):
-    await callback.message.answer(
-        "Упражнение завершено.\n\n"
-        "Что дальше?",
-        reply_markup=exercise_finished_menu
-    )
-
-    await callback.answer()
-
-@router.callback_query(lambda callback: callback.data == "next_exercise")
-async def next_exercise(callback: CallbackQuery, state):
+async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
     data = await state.get_data()
 
     workout = data["workout"]
+    workout_id = data["workout_id"]
+
     postponed_exercises = data.get("postponed_exercises", [])
     program_progress_index = data.get("program_progress_index", 0)
 
-    # Сначала возвращаемся к отложенному упражнению
-    if postponed_exercises:
+    next_exercise_index = None
+
+    # При обычном переходе после выполнения:
+    # сначала возвращаем отложенные упражнения.
+    if prefer_postponed and postponed_exercises:
         next_exercise_index = postponed_exercises.pop(0)
 
         await state.update_data(
@@ -414,35 +270,38 @@ async def next_exercise(callback: CallbackQuery, state):
         )
 
     else:
-        # Иначе двигаемся дальше по основной программе
+        # Иначе продолжаем основную программу.
         next_exercise_index = program_progress_index + 1
 
-        if next_exercise_index >= len(WORKOUTS[workout]):
-            workout_id = data["workout_id"]
-
-            finish_workout(workout_id)
-
-            await callback.message.answer(
-                f"Тренировка {workout} завершена! 💪"
+        if next_exercise_index < len(WORKOUTS[workout]):
+            await state.update_data(
+                program_progress_index=next_exercise_index
             )
 
-            await state.clear()
-            await callback.answer()
-            return
+        # Основная программа закончилась.
+        else:
+            # Если остались отложенные — возвращаемся к ним.
+            if postponed_exercises:
+                next_exercise_index = postponed_exercises.pop(0)
 
-        await state.update_data(
-            program_progress_index=next_exercise_index
-        )
+                await state.update_data(
+                    postponed_exercises=postponed_exercises
+                )
+            else:
+                finish_workout(workout_id)
+
+                await message.answer(
+                    f"Тренировка {workout} завершена! 💪"
+                )
+
+                await state.clear()
+                return
 
     next_exercise = WORKOUTS[workout][next_exercise_index]
 
     await state.update_data(
         exercise_index=next_exercise_index,
         exercise=next_exercise["name"],
-        set_number=1,
-        warmup_count=0,
-        working_set_number=0,
-        is_warmup=None
     )
 
     previous_sets = get_last_exercise_sets(next_exercise["name"])
@@ -455,14 +314,17 @@ async def next_exercise(callback: CallbackQuery, state):
         for weight, reps in previous_sets:
             previous_text += f"{weight:g} кг × {reps}\n"
 
-    await callback.message.answer(
+    await state.set_state(WorkoutState.waiting_for_exercise_input)
+
+    await message.answer(
         f"Следующее упражнение — {next_exercise['name']}.\n"
         f"{previous_text}\n"
-        f"Выберите тип первого подхода:",
-        reply_markup=set_type_menu
+        f"Введите все подходы одним сообщением.\n\n"
+        f"Пример:\n"
+        f"20 10\n"
+        f"50 10\n\n"
+        f"60 9 3"
     )
-
-    await callback.answer()
 
 @router.callback_query(lambda callback: callback.data == "finish_workout")
 async def finish_workout_button(callback: CallbackQuery, state):
