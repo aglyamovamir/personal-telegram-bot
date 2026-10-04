@@ -212,6 +212,23 @@ def finish_workout(workout_id):
     connection.commit()
     connection.close()
 
+def cancel_workout(workout_id):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "DELETE FROM workout_sets WHERE workout_id = ?",
+        (workout_id,)
+    )
+
+    cursor.execute(
+        "DELETE FROM workouts WHERE id = ?",
+        (workout_id,)
+    )
+
+    connection.commit()
+    connection.close()
+
 def get_last_workout_by_type(workout_type):
     connection = get_connection()
     cursor = connection.cursor()

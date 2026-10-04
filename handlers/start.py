@@ -2,13 +2,14 @@ from datetime import datetime
 from email.mime import message
 
 from aiogram import Router, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import CallbackQuery, Message
 
 from database.db import (
     create_workout,
     save_set,
     finish_workout,
+    cancel_workout,
     get_last_workout_by_type,
     get_last_workout,
     get_workout_sets,
@@ -133,6 +134,56 @@ async def training_button(callback: CallbackQuery):
     )
     await callback.answer()
 
+@router.message(Command("cancel"))
+async def cancel_current_workout(message: Message, state):
+    data = await state.get_data()
+
+    workout_id = data.get("workout_id")
+
+    if workout_id is None:
+        await message.answer(
+            "Сейчас нет активной тренировки."
+        )
+        return
+
+    cancel_workout(workout_id)
+    await state.clear()
+
+    await message.answer(
+        "❌ Тренировка отменена.\n"
+        "Все введённые подходы удалены."
+    )
+
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_menu
+    )
+
+
+@router.message(Command("exit"))
+async def exit_current_workout(message: Message, state):
+    data = await state.get_data()
+
+    workout_id = data.get("workout_id")
+
+    if workout_id is None:
+        await message.answer(
+            "Сейчас нет активной тренировки."
+        )
+        return
+
+    finish_workout(workout_id)
+    await state.clear()
+
+    await message.answer(
+        "🚪 Вышли из тренировки.\n"
+        "Введённые подходы сохранены."
+    )
+
+    await message.answer(
+        "Главное меню:",
+        reply_markup=main_menu
+    )
 
 @router.callback_query(lambda callback: callback.data.startswith("workout_"))
 async def workout_selected(callback: CallbackQuery, state):
