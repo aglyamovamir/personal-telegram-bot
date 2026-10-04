@@ -435,3 +435,24 @@ def get_last_exercise_sets(exercise):
 
     connection.close()
     return sets
+
+def fix_october_workouts():
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        UPDATE workouts
+        SET workout_type = 'B'
+        WHERE DATE(started_at) = '2026-10-01'
+          AND workout_type = 'C'
+    """)
+
+    cursor.execute("""
+        UPDATE workouts
+        SET workout_type = 'C'
+        WHERE DATE(started_at) = '2026-10-03'
+          AND workout_type = 'B'
+    """)
+
+    connection.commit()
+    connection.close()

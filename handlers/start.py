@@ -10,6 +10,7 @@ from database.db import (
     save_set,
     finish_workout,
     cancel_workout,
+    fix_october_workouts,
     get_last_workout_by_type,
     get_last_workout,
     get_workout_sets,
@@ -392,3 +393,17 @@ async def finish_workout_button(callback: CallbackQuery, state):
 
     await state.clear()
     await callback.answer()
+
+@router.message(Command("fix_week"))
+async def fix_week(message: Message):
+    try:
+        fix_october_workouts()
+        await message.answer(
+            "✅ Готово.\n"
+            "01.10 → B\n"
+            "03.10 → C"
+        )
+    except Exception as e:
+        await message.answer(
+            f"❌ Ошибка при изменении базы:\n{e}"
+        )
