@@ -31,49 +31,10 @@ def init_db():
             weight REAL NOT NULL,
             reps INTEGER NOT NULL,
             created_at TEXT NOT NULL,
+            exercise_id TEXT,
             FOREIGN KEY (workout_id) REFERENCES workouts(id)
         )
     """)
-
-    cursor.execute("PRAGMA table_info(workout_sets)")
-    columns = [row[1] for row in cursor.fetchall()]
-
-    if "exercise_id" not in columns:
-        cursor.execute("""
-            ALTER TABLE workout_sets
-            ADD COLUMN exercise_id TEXT
-        """)
-
-    exercise_id_mapping = {
-        "Жим лежа": "bench-press",
-        "Присед со штангой": "squat",
-        "Тяга штанги в наклоне": "barbell-row",
-        "Тяга штанги в блоке": "barbell-row",
-        "Подъем на носки стоя на одной ноге": "machine-calf-raise",
-        "Пресс с отягощением": "plate-loaded-abdominal-crunch",
-        "Пресс — новый тренажер": "plate-loaded-abdominal-crunch",
-        "Пресс": "plate-loaded-abdominal-crunch",
-        "Подтягивания": "pull-up",
-        "Румынская тяга": "romanian-deadlift",
-        "Жим гантелями на наклонной скамье": "incline-db-press",
-        "Отжимания на брусьях": "weighted-dips",
-        "Жим ногами": "leg-press",
-        "Обратные разведения": "rear-delt-fly",
-        "Предплечье": "wrist-curl",
-        "Жим гантелями на бицепс": "bicep-curl",
-        "Махи в стороны гантелями": "lateral-raise",
-        "Молотковые разгибания с гантелями": "hammer-curl",
-        "Трицепс на веревочной": "tricep-pushdown",
-        "Сгибание рук на бицепс перед собой хватом молоток": "cross-body-hammer-curl",
-    }
-
-    for exercise_name, exercise_id in exercise_id_mapping.items():
-        cursor.execute("""
-            UPDATE workout_sets
-            SET exercise_id = ?
-            WHERE exercise = ?
-            AND exercise_id IS NULL
-        """, (exercise_id, exercise_name))
 
     connection.commit()
 
