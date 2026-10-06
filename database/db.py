@@ -35,6 +35,17 @@ def init_db():
         )
     """)
 
+    cursor.execute("PRAGMA table_info(workout_sets)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if "exercise_id" not in columns:
+        cursor.execute("""
+            ALTER TABLE workout_sets
+            ADD COLUMN exercise_id TEXT
+        """)
+
+    connection.commit()
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS daily_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,7 +178,15 @@ def create_workout(workout_type):
     return workout_id
 
 
-def save_set(workout_id, exercise, set_number, weight, reps, is_warmup=False):
+def save_set(
+    workout_id,
+    exercise,
+    set_number,
+    weight,
+    reps,
+    is_warmup=False,
+    exercise_id=None,
+):
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -175,16 +194,18 @@ def save_set(workout_id, exercise, set_number, weight, reps, is_warmup=False):
         INSERT INTO workout_sets (
             workout_id,
             exercise,
+            exercise_id,
             set_number,
             is_warmup,
             weight,
             reps,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         workout_id,
         exercise,
+        exercise_id,
         set_number,
         1 if is_warmup else 0,
         weight,
@@ -194,7 +215,6 @@ def save_set(workout_id, exercise, set_number, weight, reps, is_warmup=False):
 
     connection.commit()
     connection.close()
-
 
 def finish_workout(workout_id):
     connection = get_connection()
@@ -411,7 +431,8 @@ def has_workout_on_date(date):
 
     return count > 0
 
-def get_last_exercise_sets(exercise):
+def get_last_exercise_sets(exercise_id):
+
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -419,19 +440,19 @@ def get_last_exercise_sets(exercise):
         SELECT ws.weight, ws.reps
         FROM workout_sets ws
         JOIN workouts w ON w.id = ws.workout_id
-        WHERE ws.exercise = ?
+        WHERE ws.exercise_id = ?
           AND w.finished_at IS NOT NULL
           AND w.id = (
               SELECT MAX(ws2.workout_id)
               FROM workout_sets ws2
               JOIN workouts w2 ON w2.id = ws2.workout_id
-              WHERE ws2.exercise = ?
+              WHERE ws2.exercise_id = ?
                 AND w2.finished_at IS NOT NULL
           )
         ORDER BY ws.id
-    """, (exercise, exercise))
+    """, (exercise_id, exercise_id))
 
     sets = cursor.fetchall()
-
     connection.close()
+
     return sets

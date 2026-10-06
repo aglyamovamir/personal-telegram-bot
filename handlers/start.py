@@ -3,7 +3,7 @@ from email.mime import message
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import CallbackQuery, Message, FSInputFile
+from aiogram.types import CallbackQuery, Message
 
 from database.db import (
     create_workout,
@@ -135,82 +135,6 @@ async def training_button(callback: CallbackQuery):
     )
     await callback.answer()
 
-@router.message(Command("export_db"))
-async def export_db(message: Message):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT
-            w.id,
-            w.started_at,
-            w.workout_type,
-            w.finished_at,
-            ws.exercise,
-            ws.set_number,
-            ws.is_warmup,
-            ws.weight,
-            ws.reps
-        FROM workouts w
-        LEFT JOIN workout_sets ws
-            ON w.id = ws.workout_id
-        ORDER BY w.id, ws.id
-    """)
-
-    rows = cursor.fetchall()
-    connection.close()
-
-    file_path = "database/export.csv"
-
-    with open(file_path, "w", encoding="utf-8-sig", newline="") as file:
-        import csv
-
-        writer = csv.writer(file, delimiter=";")
-
-        writer.writerow([
-            "workout_id",
-            "date",
-            "type",
-            "status",
-            "exercise",
-            "set",
-            "warmup",
-            "weight",
-            "reps"
-        ])
-
-        for row in rows:
-            (
-                workout_id,
-                started_at,
-                workout_type,
-                finished_at,
-                exercise,
-                set_number,
-                is_warmup,
-                weight,
-                reps
-            ) = row
-
-            status = "completed" if finished_at else "active"
-
-            writer.writerow([
-                workout_id,
-                started_at,
-                workout_type,
-                status,
-                exercise,
-                set_number,
-                is_warmup,
-                weight,
-                reps
-            ])
-
-    await message.answer_document(
-        FSInputFile(file_path),
-        caption="📦 Полный экспорт production-базы"
-    )
-
 @router.message(Command("cancel"))
 async def cancel_current_workout(message: Message, state):
     data = await state.get_data()
@@ -277,11 +201,12 @@ async def workout_selected(callback: CallbackQuery, state):
         postponed_exercises=[],
         completed_exercises=[],
         exercise=first_exercise["name"],
+        exercise_id=first_exercise["exercise_id"],
     )
 
     await state.set_state(WorkoutState.waiting_for_exercise_input)
 
-    previous_sets = get_last_exercise_sets(first_exercise["name"])
+    previous_sets = get_last_exercise_sets(first_exercise["exercise_id"])
 
     previous_text = ""
 
@@ -353,6 +278,7 @@ async def process_exercise_input(message: Message, state):
 
     workout_id = data["workout_id"]
     exercise = data["exercise"]
+    exercise_id = data["exercise_id"]
 
     set_number = 1
 
@@ -364,6 +290,7 @@ async def process_exercise_input(message: Message, state):
             weight=item["weight"],
             reps=item["reps"],
             is_warmup=item["is_warmup"],
+            exercise_id=exercise_id,
         )
 
         set_number += 1
@@ -446,9 +373,10 @@ async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
     await state.update_data(
         exercise_index=next_exercise_index,
         exercise=next_exercise["name"],
+        exercise_id=next_exercise["exercise_id"],
     )
 
-    previous_sets = get_last_exercise_sets(next_exercise["name"])
+    previous_sets = get_last_exercise_sets(next_exercise["exercise_id"])
 
     previous_text = ""
 
