@@ -248,6 +248,7 @@ def save_set(
     connection.close()
 
 def finish_workout(workout_id):
+
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -262,6 +263,9 @@ def finish_workout(workout_id):
 
     connection.commit()
     connection.close()
+
+    from google_sheets import sync_workout
+    sync_workout(workout_id)
 
 def cancel_workout(workout_id):
     connection = get_connection()
