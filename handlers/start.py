@@ -3,7 +3,7 @@ from email.mime import message
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, FSInputFile
 
 from database.db import (
     create_workout,
@@ -140,37 +140,76 @@ async def export_db(message: Message):
     connection = get_connection()
     cursor = connection.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM workouts")
-    workouts_count = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM workout_sets")
-    sets_count = cursor.fetchone()[0]
-
     cursor.execute("""
-        SELECT id, workout_type, started_at, finished_at
-        FROM workouts
-        ORDER BY id DESC
-        LIMIT 10
+        SELECT
+            w.id,
+            w.started_at,
+            w.workout_type,
+            w.finished_at,
+            ws.exercise,
+            ws.set_number,
+            ws.is_warmup,
+            ws.weight,
+            ws.reps
+        FROM workouts w
+        LEFT JOIN workout_sets ws
+            ON w.id = ws.workout_id
+        ORDER BY w.id, ws.id
     """)
-    workouts = cursor.fetchall()
 
+    rows = cursor.fetchall()
     connection.close()
 
-    text = (
-        f"📦 База данных\n\n"
-        f"Тренировок: {workouts_count}\n"
-        f"Подходов: {sets_count}\n\n"
-        f"Последние тренировки:\n"
+    file_path = "database/export.csv"
+
+    with open(file_path, "w", encoding="utf-8-sig", newline="") as file:
+        import csv
+
+        writer = csv.writer(file, delimiter=";")
+
+        writer.writerow([
+            "workout_id",
+            "date",
+            "type",
+            "status",
+            "exercise",
+            "set",
+            "warmup",
+            "weight",
+            "reps"
+        ])
+
+        for row in rows:
+            (
+                workout_id,
+                started_at,
+                workout_type,
+                finished_at,
+                exercise,
+                set_number,
+                is_warmup,
+                weight,
+                reps
+            ) = row
+
+            status = "completed" if finished_at else "active"
+
+            writer.writerow([
+                workout_id,
+                started_at,
+                workout_type,
+                status,
+                exercise,
+                set_number,
+                is_warmup,
+                weight,
+                reps
+            ])
+
+    await message.answer_document(
+        FSInputFile(file_path),
+        caption="📦 Полный экспорт production-базы"
     )
-
-    for workout_id, workout_type, started_at, finished_at in workouts:
-        status = "завершена" if finished_at else "активна"
-        text += (
-            f"\n#{workout_id} — {workout_type}\n"
-            f"{started_at} — {status}\n"
-        )
-
-    await message.answer(text)
 
 @router.message(Command("cancel"))
 async def cancel_current_workout(message: Message, state):
