@@ -14,6 +14,7 @@ from database.db import (
     get_last_workout,
     get_workout_sets,
     get_last_exercise_sets,
+    get_connection,
 )
 
 from keyboards.main_menu import main_menu
@@ -133,6 +134,43 @@ async def training_button(callback: CallbackQuery):
         reply_markup=workout_menu
     )
     await callback.answer()
+
+@router.message(Command("export_db"))
+async def export_db(message: Message):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM workouts")
+    workouts_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM workout_sets")
+    sets_count = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT id, workout_type, started_at, finished_at
+        FROM workouts
+        ORDER BY id DESC
+        LIMIT 10
+    """)
+    workouts = cursor.fetchall()
+
+    connection.close()
+
+    text = (
+        f"📦 База данных\n\n"
+        f"Тренировок: {workouts_count}\n"
+        f"Подходов: {sets_count}\n\n"
+        f"Последние тренировки:\n"
+    )
+
+    for workout_id, workout_type, started_at, finished_at in workouts:
+        status = "завершена" if finished_at else "активна"
+        text += (
+            f"\n#{workout_id} — {workout_type}\n"
+            f"{started_at} — {status}\n"
+        )
+
+    await message.answer(text)
 
 @router.message(Command("cancel"))
 async def cancel_current_workout(message: Message, state):
