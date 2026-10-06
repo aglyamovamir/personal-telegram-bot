@@ -17,7 +17,7 @@ from database.db import (
 )
 
 from keyboards.main_menu import main_menu
-from keyboards.workout_menu import workout_menu
+from keyboards.workout_menu import workout_menu, postpone_menu
 from states.workout import WorkoutState
 from workouts.program import WORKOUTS
 from workouts.parser import parse_exercise_input, format_parsed_sets
@@ -198,6 +198,7 @@ async def workout_selected(callback: CallbackQuery, state):
         exercise_index=0,
         program_progress_index=0,
         postponed_exercises=[],
+        completed_exercises=[],
         exercise=first_exercise["name"],
     )
 
@@ -221,7 +222,8 @@ async def workout_selected(callback: CallbackQuery, state):
         f"Пример:\n"
         f"20 10\n"
         f"50 10\n\n"
-        f"60 9 3"
+        f"60 9 3",
+        reply_markup=postpone_menu
     )
 
     await callback.answer()
@@ -294,8 +296,14 @@ async def process_exercise_input(message: Message, state):
         f"{format_parsed_sets(sets)}"
     )
 
+    completed_exercises = data.get("completed_exercises", [])
+
+    if data["exercise_index"] not in completed_exercises:
+        completed_exercises.append(data["exercise_index"])
+
     await state.update_data(
-        set_number=set_number
+        set_number=set_number,
+        completed_exercises=completed_exercises
     )
 
     await move_to_next_exercise(message, state)
@@ -307,6 +315,8 @@ async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
     workout_id = data["workout_id"]
 
     postponed_exercises = data.get("postponed_exercises", [])
+    completed_exercises = data.get("completed_exercises", [])
+
     program_progress_index = data.get("program_progress_index", 0)
 
     next_exercise_index = None
@@ -321,8 +331,14 @@ async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
         )
 
     else:
-        # Иначе продолжаем основную программу.
+        # Ищем следующее ещё не выполненное упражнение.
         next_exercise_index = program_progress_index + 1
+
+        while (
+            next_exercise_index < len(WORKOUTS[workout])
+            and next_exercise_index in completed_exercises
+        ):
+            next_exercise_index += 1
 
         if next_exercise_index < len(WORKOUTS[workout]):
             await state.update_data(
@@ -374,7 +390,8 @@ async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
         f"Пример:\n"
         f"20 10\n"
         f"50 10\n\n"
-        f"60 9 3"
+        f"60 9 3",
+        reply_markup=postpone_menu
     )
 
 @router.callback_query(lambda callback: callback.data == "finish_workout")
