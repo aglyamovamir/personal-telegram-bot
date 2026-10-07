@@ -5,10 +5,18 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from database.db import save_morning_metrics, save_evening_metrics
+from database.db import (
+    save_morning_metrics,
+    save_evening_metrics,
+    save_bot_settings,
+    get_bot_settings,
+)
 from google_sheets import sync_daily_metrics
-from states.daily import DailyMorningState, DailyEveningState
-
+from states.daily import (
+    DailyMorningState,
+    DailyEveningState,
+    DailyScheduleState,
+)
 
 router = Router()
 
@@ -305,3 +313,80 @@ async def evening_screen_time(message: Message, state: FSMContext):
     )
 
     await state.clear()
+
+@router.message(Command("change_time"))
+async def change_time_start(message: Message, state: FSMContext):
+    settings = get_bot_settings()
+
+    if settings:
+        chat_id, morning_time, evening_time = settings
+        current = (
+            f"Текущее расписание:\n"
+            f"🌅 Утро: {morning_time}\n"
+            f"🌙 Вечер: {evening_time}\n\n"
+        )
+    else:
+        current = ""
+
+    await state.set_state(DailyScheduleState.morning_time)
+    await message.answer(
+        f"{current}"
+        "Во сколько присылать утренний опрос?\n"
+        "Например: 07:30"
+    )
+
+
+@router.message(DailyScheduleState.morning_time)
+async def schedule_morning_time(message: Message, state: FSMContext):
+    value = message.text.strip()
+
+    try:
+        hour, minute = map(int, value.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer(
+            "Не понял время.\n"
+            "Введи в формате ЧЧ:ММ, например: 07:30"
+        )
+        return
+
+    await state.update_data(morning_time=value)
+    await state.set_state(DailyScheduleState.evening_time)
+
+    await message.answer(
+        "Во сколько присылать вечерний опрос?\n"
+        "Например: 22:00"
+    )
+
+
+@router.message(DailyScheduleState.evening_time)
+async def schedule_evening_time(message: Message, state: FSMContext):
+    value = message.text.strip()
+
+    try:
+        hour, minute = map(int, value.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer(
+            "Не понял время.\n"
+            "Введи в формате ЧЧ:ММ, например: 22:00"
+        )
+        return
+
+    data = await state.get_data()
+
+    save_bot_settings(
+        chat_id=message.chat.id,
+        morning_time=data["morning_time"],
+        evening_time=value,
+    )
+
+    await state.clear()
+
+    await message.answer(
+        "✅ Расписание сохранено!\n\n"
+        f"🌅 Утро: {data['morning_time']}\n"
+        f"🌙 Вечер: {value}"
+    )

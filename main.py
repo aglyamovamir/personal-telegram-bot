@@ -1,6 +1,7 @@
 import asyncio
 import os
 
+from scheduler import scheduler, schedule_morning, schedule_evening
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
@@ -25,6 +26,9 @@ dp.include_router(today_router)
 
 async def main():
     init_db()
+    scheduler.start()
+    schedule_morning(bot, dp)
+    schedule_evening(bot, dp)
     await dp.start_polling(bot)
 
 

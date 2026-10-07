@@ -39,6 +39,15 @@ def init_db():
     connection.commit()
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            chat_id INTEGER NOT NULL,
+            morning_time TEXT NOT NULL,
+            evening_time TEXT NOT NULL
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS daily_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL UNIQUE,
@@ -452,3 +461,35 @@ def get_last_exercise_sets(exercise_id):
     connection.close()
 
     return sets
+
+def save_bot_settings(chat_id, morning_time, evening_time):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        INSERT INTO bot_settings (id, chat_id, morning_time, evening_time)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            chat_id = excluded.chat_id,
+            morning_time = excluded.morning_time,
+            evening_time = excluded.evening_time
+    """, (chat_id, morning_time, evening_time))
+
+    connection.commit()
+    connection.close()
+
+
+def get_bot_settings():
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT chat_id, morning_time, evening_time
+        FROM bot_settings
+        WHERE id = 1
+    """)
+
+    result = cursor.fetchone()
+    connection.close()
+
+    return result

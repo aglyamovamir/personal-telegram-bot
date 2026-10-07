@@ -2,3 +2,4 @@ aiogram
 python-dotenv
 gspread
 google-auth
+APScheduler

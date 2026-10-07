@@ -14,3 +14,7 @@ class DailyEveningState(StatesGroup):
     mood = State()
     steps = State()
     screen_time = State()
+
+class DailyScheduleState(StatesGroup):
+    morning_time = State()
+    evening_time = State()

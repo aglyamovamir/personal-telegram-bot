@@ -220,7 +220,6 @@ def sync_workout(workout_id):
 
     for set_row in sets:
         (
-            set_id,
             exercise_id,
             exercise_name,
             set_number,
