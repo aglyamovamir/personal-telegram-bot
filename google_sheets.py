@@ -170,7 +170,6 @@ def sync_workout(workout_id):
         workout_type,
         "completed",
         started_at,
-        finished_at,
         duration_min,
         total_sets,
         working_sets,
@@ -193,7 +192,7 @@ def sync_workout(workout_id):
         print(f"Workout added: {workout_id}")
     else:
         workouts_sheet.update(
-            f"A{target_row}:J{target_row}",
+            f"A{target_row}:I{target_row}",
             [workout_row]
         )
         print(f"Workout updated: {workout_id}")
@@ -218,8 +217,10 @@ def sync_workout(workout_id):
 
     rows_to_add = []
 
+    
     for set_row in sets:
         (
+            _set_id,
             exercise_id,
             exercise_name,
             set_number,
@@ -229,7 +230,6 @@ def sync_workout(workout_id):
         ) = set_row
 
         volume = weight * reps
-
         key = (
             str(workout_id),
             str(exercise_id),
@@ -252,6 +252,7 @@ def sync_workout(workout_id):
 
         if key not in existing_set_keys:
             rows_to_add.append(row)
+            existing_set_keys.add(key)
 
     if rows_to_add:
         sets_sheet.append_rows(rows_to_add)

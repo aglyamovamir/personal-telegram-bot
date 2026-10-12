@@ -77,6 +77,12 @@ WORKOUTS = {
             "working_sets": 3,
         },
         {
+            "name": "Молотковые сгибания поперёк корпуса",
+            "exercise_id": "cross-body-hammer-curl",
+            "warmup": [],
+            "working_sets": 3,
+        },
+        {
             "name": "Трицепс",
             "exercise_id": "tricep-pushdown",
             "warmup": [

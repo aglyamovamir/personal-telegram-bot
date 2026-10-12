@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from database.db import init_db
 
 from handlers.start import router as start_router
-from handlers.daily import router as daily_router
+from handlers.daily import router as daily_router, configure_scheduler
 from handlers.today import router as today_router
 
 
@@ -26,6 +26,7 @@ dp.include_router(today_router)
 
 async def main():
     init_db()
+    configure_scheduler(bot, dp)
     scheduler.start()
     schedule_morning(bot, dp)
     schedule_evening(bot, dp)

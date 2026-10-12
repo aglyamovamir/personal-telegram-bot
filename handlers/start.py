@@ -29,6 +29,42 @@ from keyboards.history_menu import history_menu
 router = Router()
 
 
+@router.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "<b>Формат ввода подходов</b>\n\n"
+        "Каждая строка — вес и количество повторений.\n\n"
+        "<code>20 10\n"
+        "50 10\n"
+        "\n"
+        "60 10 3</code>\n\n"
+        "Первые две строки — разминочные подходы. "
+        "Пустая строка отделяет разминку от рабочих подходов.\n\n"
+        "<code>60 10 3</code> — 3 рабочих подхода "
+        "по 60 кг на 10 повторений.\n\n"
+        "Если не оставить пустую строку, все подходы "
+        "будут записаны как рабочие.",
+        parse_mode="HTML"
+    )
+
+def format_exercise_sets(sets):
+    groups = []
+
+    for is_warmup, weight, reps in sets:
+        if groups and groups[-1][:3] == (is_warmup, weight, reps):
+            groups[-1][3] += 1
+        else:
+            groups.append([is_warmup, weight, reps, 1])
+
+    text = ""
+
+    for is_warmup, weight, reps, count in groups:
+        label = "Разминка" if is_warmup else "Рабочий"
+        count_text = f" × {count}" if count > 1 else ""
+        text += f"{label}: {weight:g} кг × {reps}{count_text}\n"
+
+    return text
+
 @router.message(CommandStart())
 async def start_command(message: Message):
     await message.answer(
@@ -94,30 +130,23 @@ async def history_selected(callback: CallbackQuery):
         f"Окончание: {finished.strftime('%d.%m.%Y %H:%M')}\n"
     )
 
+    
     current_exercise = None
-    warmup_number = 0
-    working_number = 0
+    grouped_sets = []
 
     for exercise, set_number, is_warmup, weight, reps in sets:
         if exercise != current_exercise:
-            current_exercise = exercise
-            warmup_number = 0
-            working_number = 0
+            if grouped_sets:
+                text += format_exercise_sets(grouped_sets)
 
+            current_exercise = exercise
+            grouped_sets = []
             text += f"\n<b>{exercise}</b>\n"
 
-        if is_warmup:
-            warmup_number += 1
-            text += (
-                f"Разминка {warmup_number}: "
-                f"{weight:g} кг × {reps}\n"
-            )
-        else:
-            working_number += 1
-            text += (
-                f"Рабочий {working_number}: "
-                f"{weight:g} кг × {reps}\n"
-            )
+        grouped_sets.append((is_warmup, weight, reps))
+
+    if grouped_sets:
+        text += format_exercise_sets(grouped_sets)
 
     await callback.message.answer(
         text,
@@ -219,12 +248,7 @@ async def workout_selected(callback: CallbackQuery, state):
     await callback.message.answer(
         f"Выбрана тренировка {workout_name}.\n\n"
         f"Упражнение — {first_exercise['name']}.\n"
-        f"{previous_text}\n"
-        f"Введите все подходы одним сообщением.\n\n"
-        f"Пример:\n"
-        f"20 10\n"
-        f"50 10\n\n"
-        f"60 9 3",
+        f"{previous_text}\n",
         reply_markup=postpone_menu
     )
 
@@ -390,12 +414,7 @@ async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
 
     await message.answer(
         f"Следующее упражнение — {next_exercise['name']}.\n"
-        f"{previous_text}\n"
-        f"Введите все подходы одним сообщением.\n\n"
-        f"Пример:\n"
-        f"20 10\n"
-        f"50 10\n\n"
-        f"60 9 3",
+        f"{previous_text}\n",
         reply_markup=postpone_menu
     )
 

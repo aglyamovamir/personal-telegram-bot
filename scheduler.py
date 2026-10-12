@@ -102,3 +102,7 @@ def schedule_evening(bot: Bot, dp: Dispatcher):
         id="evening_message",
         replace_existing=True,
     )
+
+def reschedule_notifications(bot: Bot, dp: Dispatcher):
+    schedule_morning(bot, dp)
+    schedule_evening(bot, dp)

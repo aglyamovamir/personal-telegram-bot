@@ -17,9 +17,17 @@ from states.daily import (
     DailyEveningState,
     DailyScheduleState,
 )
+from scheduler import reschedule_notifications
 
 router = Router()
 
+def configure_scheduler(bot, dp):
+    global _scheduler_bot, _scheduler_dp
+    _scheduler_bot = bot
+    _scheduler_dp = dp
+
+_scheduler_bot = None
+_scheduler_dp = None
 
 @router.message(Command("morning"))
 async def morning_start(message: Message, state: FSMContext):
@@ -382,6 +390,9 @@ async def schedule_evening_time(message: Message, state: FSMContext):
         morning_time=data["morning_time"],
         evening_time=value,
     )
+    
+    if _scheduler_bot is not None and _scheduler_dp is not None:
+        reschedule_notifications(_scheduler_bot, _scheduler_dp)
 
     await state.clear()
 
