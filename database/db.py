@@ -295,7 +295,7 @@ def get_workout_sets(workout_id):
     connection = get_connection()
     cursor = connection.cursor()
     cursor.execute("""
-        SELECT exercise, set_number, is_warmup, weight, reps
+        SELECT exercise, exercise_id, set_number, is_warmup, weight, reps
         FROM workout_sets
         WHERE workout_id = ?
         ORDER BY id

@@ -6,7 +6,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from database.db import get_daily_metrics, has_workout_on_date, get_connection
-
+from workouts.program import WORKOUTS
 
 SPREADSHEET_ID = "1zqO0E-zAHgr8pAB0Lqcb-txqEnSbbRNq_x69MATF2dM"
 
@@ -236,12 +236,23 @@ def sync_workout(workout_id):
             str(float(set_number))
         )
 
+        exercise_names = {
+            exercise["exercise_id"]: exercise["name"]
+            for exercises in WORKOUTS.values()
+            for exercise in exercises
+        }
+
+        canonical_exercise_name = exercise_names.get(
+            exercise_id,
+            exercise_name
+        )
+
         row = [
             workout_id,
             started_at[:10],
             workout_type,
             exercise_id or "",
-            exercise_name,
+            canonical_exercise_name,
             "",
             set_number,
             is_warmup,

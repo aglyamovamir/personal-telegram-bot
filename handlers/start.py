@@ -51,7 +51,7 @@ def format_exercise_sets(sets):
     groups = []
 
     for is_warmup, weight, reps in sets:
-        if groups and groups[-1][:3] == (is_warmup, weight, reps):
+        if groups and tuple(groups[-1][:3]) == (is_warmup, weight, reps):
             groups[-1][3] += 1
         else:
             groups.append([is_warmup, weight, reps, 1])
@@ -130,18 +130,24 @@ async def history_selected(callback: CallbackQuery):
         f"Окончание: {finished.strftime('%d.%m.%Y %H:%M')}\n"
     )
 
-    
+    exercise_names = {
+        exercise["exercise_id"]: exercise["name"]
+        for exercises in WORKOUTS.values()
+        for exercise in exercises
+    }
+
     current_exercise = None
     grouped_sets = []
 
-    for exercise, set_number, is_warmup, weight, reps in sets:
-        if exercise != current_exercise:
+    for exercise, exercise_id, set_number, is_warmup, weight, reps in sets:
+        if exercise_id != current_exercise:
             if grouped_sets:
                 text += format_exercise_sets(grouped_sets)
 
-            current_exercise = exercise
+            current_exercise = exercise_id
             grouped_sets = []
-            text += f"\n<b>{exercise}</b>\n"
+            exercise_name = exercise_names.get(exercise_id, exercise)
+            text += f"\n<b>{exercise_name}</b>\n"
 
         grouped_sets.append((is_warmup, weight, reps))
 

@@ -11,13 +11,13 @@ history_menu = InlineKeyboardMarkup(
         ],
         [
             InlineKeyboardButton(
-                text="Тренировка Б",
+                text="Тренировка B",
                 callback_data="history_B"
             )
         ],
         [
             InlineKeyboardButton(
-                text="Тренировка В",
+                text="Тренировка C",
                 callback_data="history_C"
             )
         ]
