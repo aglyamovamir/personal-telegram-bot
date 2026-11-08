@@ -13,6 +13,7 @@ def main():
     exercises = data["exercises"]
 
     connection = sqlite3.connect(DB_PATH)
+    connection.execute("PRAGMA foreign_keys=ON")
     cursor = connection.cursor()
 
     try:

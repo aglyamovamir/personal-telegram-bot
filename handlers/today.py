@@ -4,21 +4,21 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from database.db import get_daily_metrics, has_workout_on_date
+from database.db import get_daily_metrics, has_workout_on_date, user_today
 
 
 router = Router()
 
 
 @router.message(Command("today"))
-async def today_handler(message: Message):
-    today = date.today().isoformat()
+async def today_handler(message: Message, user_id: int):
+    today = user_today(user_id)
 
-    metrics = get_daily_metrics(today)
-    workout_exists = has_workout_on_date(today)
+    metrics = get_daily_metrics(user_id, today)
+    workout_exists = has_workout_on_date(user_id, today)
 
     lines = [
-        f"📊 Сегодня — {date.today().strftime('%d.%m.%Y')}",
+        f"📊 Сегодня — {date.fromisoformat(today).strftime('%d.%m.%Y')}",
         ""
     ]
 

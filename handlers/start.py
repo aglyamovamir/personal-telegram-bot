@@ -1,33 +1,25 @@
-from datetime import datetime
-from email.mime import message
+from html import escape
+from uuid import uuid4
+import sqlite3
 
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import CallbackQuery, Message
 
-from database.db import (
-    create_workout,
-    save_set,
-    finish_workout,
-    cancel_workout,
-    get_last_workout_by_type,
-    get_last_workout,
-    get_workout_sets,
-    get_last_exercise_sets,
-    get_connection,
-)
-
+from database import db, programs, sessions
 from keyboards.main_menu import main_menu
-from keyboards.workout_menu import workout_menu, postpone_menu
+from keyboards.workout_menu import workout_menu, workout_controls, correction_controls, cancel_workout_controls
+from keyboards.history_menu import history_menu
 from states.workout import WorkoutState
-from workouts.program import WORKOUTS
 from workouts.parser import parse_exercise_input, format_parsed_sets
 from handlers.daily import morning_start, evening_start
 from handlers.today import today_handler
-from keyboards.history_menu import history_menu
+from google_sheets import safe_sync_workout
+from scheduler import reschedule_notifications
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from handlers.program_editor_views import day_summary
 
 router = Router()
-
 
 @router.message(Command("help"))
 async def help_command(message: Message):
@@ -65,377 +57,415 @@ def format_exercise_sets(sets):
 
     return text
 
-@router.message(CommandStart())
-async def start_command(message: Message):
-    await message.answer(
-        "Привет! Что будем делать?",
-        reply_markup=main_menu
-    )
 
-@router.message(F.text == "🌅 Утро")
-async def morning_menu_button(message: Message, state):
-    await morning_start(message, state)
-
-
-@router.message(F.text == "🌙 Вечер")
-async def evening_menu_button(message: Message, state):
-    await evening_start(message, state)
-
-
-@router.message(F.text == "📊 Сегодня")
-async def today_menu_button(message: Message):
-    await today_handler(message)
-
-
-@router.message(F.text == "🏋️ Тренировка")
-async def training_menu_button(message: Message):
-    await message.answer(
-        "Выберите тренировку:",
-        reply_markup=workout_menu
-    )
-
-
-@router.message(F.text == "📚 История")
-async def history_menu_button(message: Message):
-    await message.answer(
-        "Какую тренировку посмотреть?",
-        reply_markup=history_menu
-    )
-
-@router.callback_query(
-    lambda callback: callback.data.startswith("history_")
-)
-async def history_selected(callback: CallbackQuery):
-    workout_type = callback.data.replace("history_", "")
-
-    workout = get_last_workout_by_type(workout_type)
-
-    if workout is None:
-        await callback.message.answer(
-            f"Завершённых тренировок типа {workout_type} пока нет."
-        )
-        await callback.answer()
-        return
-
-    workout_id, workout_type, started_at, finished_at = workout
-
-    sets = get_workout_sets(workout_id)
-
-    started = datetime.fromisoformat(started_at)
-    finished = datetime.fromisoformat(finished_at)
-
-    text = (
-        f"📊 Последняя тренировка {workout_type}\n\n"
-        f"Начало: {started.strftime('%d.%m.%Y %H:%M')}\n"
-        f"Окончание: {finished.strftime('%d.%m.%Y %H:%M')}\n"
-    )
-
-    exercise_names = {
-        exercise["exercise_id"]: exercise["name"]
-        for exercises in WORKOUTS.values()
-        for exercise in exercises
-    }
-
-    current_exercise = None
-    grouped_sets = []
-
-    for exercise, exercise_id, set_number, is_warmup, weight, reps in sets:
-        if exercise_id != current_exercise:
-            if grouped_sets:
-                text += format_exercise_sets(grouped_sets)
-
-            current_exercise = exercise_id
-            grouped_sets = []
-            exercise_name = exercise_names.get(exercise_id, exercise)
-            text += f"\n<b>{exercise_name}</b>\n"
-
-        grouped_sets.append((is_warmup, weight, reps))
-
-    if grouped_sets:
-        text += format_exercise_sets(grouped_sets)
-
-    await callback.message.answer(
-        text,
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-@router.callback_query(lambda callback: callback.data == "training")
-async def training_button(callback: CallbackQuery):
-    await callback.message.answer(
-        "Выберите тренировку:",
-        reply_markup=workout_menu
-    )
-    await callback.answer()
-
-@router.message(Command("cancel"))
-async def cancel_current_workout(message: Message, state):
-    data = await state.get_data()
-
-    workout_id = data.get("workout_id")
-
-    if workout_id is None:
-        await message.answer(
-            "Сейчас нет активной тренировки."
-        )
-        return
-
-    cancel_workout(workout_id)
-    await state.clear()
-
-    await message.answer(
-        "❌ Тренировка отменена.\n"
-        "Все введённые подходы удалены."
-    )
-
-    await message.answer(
-        "Главное меню:",
-        reply_markup=main_menu
-    )
-
-
-@router.message(Command("exit"))
-async def exit_current_workout(message: Message, state):
-    data = await state.get_data()
-
-    workout_id = data.get("workout_id")
-
-    if workout_id is None:
-        await message.answer(
-            "Сейчас нет активной тренировки."
-        )
-        return
-
-    finish_workout(workout_id)
-    await state.clear()
-
-    await message.answer(
-        "🚪 Вышли из тренировки.\n"
-        "Введённые подходы сохранены."
-    )
-
-    await message.answer(
-        "Главное меню:",
-        reply_markup=main_menu
-    )
-
-@router.callback_query(lambda callback: callback.data.startswith("workout_"))
-async def workout_selected(callback: CallbackQuery, state):
-    workout_name = callback.data.replace("workout_", "")
-    workout_id = create_workout(workout_name)
-
-    first_exercise = WORKOUTS[workout_name][0]
-
-    await state.update_data(
-        workout_id=workout_id,
-        workout=workout_name,
-        exercise_index=0,
-        program_progress_index=0,
-        postponed_exercises=[],
-        completed_exercises=[],
-        exercise=first_exercise["name"],
-        exercise_id=first_exercise["exercise_id"],
-    )
-
+async def show_session(message, state, user_id, session):
+    progress = session['progress']
+    index = progress['current']
+    exercise = session['snapshot']['exercises'][index]
+    await state.set_data(dict(workout_id=session['workout_id'], exercise_index=index,
+                              revision=session['revision']))
     await state.set_state(WorkoutState.waiting_for_exercise_input)
-
-    previous_sets = get_last_exercise_sets(first_exercise["exercise_id"])
-
-    previous_text = ""
-
-    if previous_sets:
-        previous_text = "\nПрошлая тренировка:\n"
-
-        for weight, reps in previous_sets:
-            previous_text += f"{weight:g} кг × {reps}\n"
-
-    await callback.message.answer(
-        f"Выбрана тренировка {workout_name}.\n\n"
-        f"Упражнение — {first_exercise['name']}.\n"
-        f"{previous_text}\n",
-        reply_markup=postpone_menu
+    previous = db.get_last_exercise_sets(user_id, exercise['exercise_id'])
+    previous_text = '\nПрошлые результаты:\n' + '\n'.join(f'{w:g} кг × {r}' for w, r in previous) if previous else ''
+    await message.answer(
+        f"Тренировка: {session['snapshot']['day_name']}\n"
+        f"Упражнение {index + 1}: {exercise['name']}\n"
+        f"Выполнено: {len(progress['completed'])} из {len(session['snapshot']['exercises'])}. Отложено: {len(progress['postponed'])}.\n"
+        f"Отправьте ВСЕ выполненные подходы этого упражнения ОДНИМ сообщением. Затем сразу перейдём дальше.\n"
+        f"Формат: вес повторения [количество], например 50 8 3.\n"
+        f"Разминку отделите от рабочих пустой строкой; без неё все подходы рабочие. /help — примеры.{previous_text}",
+        reply_markup=workout_controls(session['workout_id'], index, session['revision'], can_correct=bool(progress['completed'])),
     )
 
+
+async def show_training(message, state, user_id):
+    current = await state.get_state()
+    if current and current.startswith('ProgramEditor:'):
+        editor = (await state.get_data()).get('editor', {})
+        if not editor.get('dirty'):
+            await state.clear()
+            current = None
+    workout_states = {WorkoutState.waiting_for_exercise_input.state, WorkoutState.correcting_previous.state, WorkoutState.confirming_cancel.state}
+    if current and current not in workout_states:
+        await message.answer('Сначала завершите текущий опрос или сохраните/отмените редактирование программы.')
+        return
+    active = db.get_active_workout(user_id)
+    if active:
+        # Only a workout can be restored over a lost/old workout cache.
+        current = await state.get_state()
+        if current and current not in workout_states:
+            await message.answer('Сначала закончите текущий опрос или вызовите /cancel.')
+            return
+        try:
+            session = sessions.get_session(user_id, active[0])
+        except db.WorkoutAccessError as error:
+            await message.answer(str(error))
+            return
+        await show_session(message, state, user_id, session)
+        return
+    if await state.get_state() in workout_states:
+        await state.clear()  # Completion may have committed immediately before restart/failure.
+    choices = programs.list_programs(user_id)
+    program = programs.get_active_program(user_id)
+    if not choices:
+        await message.answer('У вас пока нет программы. Обратитесь к владельцу бота для настройки.')
+        return
+    await message.answer('Выберите программу или день:', reply_markup=workout_menu(choices, program))
+
+
+@router.message(CommandStart())
+async def start_command(message: Message, user_id: int):
+    reschedule_notifications(message.bot, user_id)
+    await message.answer('Главное меню. Продолжить тренировку: /resume', reply_markup=main_menu)
+
+
+@router.message(F.text == '🌅 Утро')
+async def morning_menu_button(message: Message, state, user_id: int):
+    await morning_start(message, state, user_id)
+
+
+@router.message(F.text == '🌙 Вечер')
+async def evening_menu_button(message: Message, state, user_id: int):
+    await evening_start(message, state, user_id)
+
+
+@router.message(F.text == '📊 Сегодня')
+async def today_menu_button(message: Message, user_id: int):
+    await today_handler(message, user_id)
+
+
+@router.message(F.text == '🏋️ Тренировка')
+@router.message(Command('resume'))
+async def training_menu_button(message: Message, state, user_id: int):
+    await show_training(message, state, user_id)
+
+
+@router.callback_query(F.data == 'training')
+async def training_button(callback: CallbackQuery, state, user_id: int):
+    await show_training(callback.message, state, user_id)
     await callback.answer()
 
-@router.callback_query(lambda callback: callback.data == "postpone_exercise")
-async def postpone_exercise(callback: CallbackQuery, state):
+
+@router.callback_query(F.data.startswith('trainingpage:'))
+async def training_page(callback: CallbackQuery, user_id: int):
+    try:
+        _, program_page, day_page = callback.data.split(':')
+        program_page, day_page = int(program_page), int(day_page)
+    except ValueError:
+        await callback.answer('Неверная страница.')
+        return
+    await callback.message.answer('Выберите программу или день:', reply_markup=workout_menu(
+        programs.list_programs(user_id), programs.get_active_program(user_id), program_page, day_page))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('program:'))
+async def program_selected(callback: CallbackQuery, user_id: int):
+    try:
+        program_id = int(callback.data.split(':')[1])
+    except ValueError:
+        await callback.answer('Неверная кнопка.')
+        return
+    programs.activate_program(user_id, program_id)
+    await callback.message.answer('Программа выбрана. Выберите день:',
+                                  reply_markup=workout_menu(programs.list_programs(user_id), programs.get_active_program(user_id)))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('day:') | (F.data == 'nextday'))
+async def workout_selected(callback: CallbackQuery, state, user_id: int):
+    if await state.get_state():
+        await callback.answer('Сначала закончите текущий ввод или продолжите тренировку через /resume.', show_alert=True)
+        return
+    try:
+        day_id = None if callback.data == 'nextday' else int(callback.data.split(':')[1])
+    except ValueError:
+        await callback.answer('Неверный день.')
+        return
+    session = sessions.start_day(user_id, day_id)
+    await show_session(callback.message, state, user_id, session)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('previewday:') | (F.data == 'previewnext'))
+async def preview_day(callback: CallbackQuery, user_id: int):
+    try:
+        day = programs.next_day(user_id) if callback.data == 'previewnext' else programs.get_day(user_id, int(callback.data.split(':')[1]))
+    except ValueError as error:
+        if isinstance(error, db.WorkoutAccessError):
+            raise
+        await callback.answer('Неверный день.')
+        return
+    text = day_summary(day)
+    for offset in range(0, len(text), 3900):
+        await callback.message.answer(text[offset:offset + 3900])
+    await callback.message.answer('Начать этот день? Плановые подходы не считаются выполненными.',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Начать тренировку', callback_data=f"day:{day['id']}")],
+            [InlineKeyboardButton(text='Назад', callback_data='training')],
+        ]))
+    await callback.answer()
+
+
+async def valid_control(callback, state, user_id):
     data = await state.get_data()
+    if 'workout_id' not in data:
+        await callback.answer('Продолжите тренировку через /resume.', show_alert=True)
+        return None
+    session = sessions.get_session(user_id, data['workout_id'])
+    suffix = f"{session['workout_id']}:{session['progress']['current']}:{session['revision']}"
+    if callback.data.split(':', 1)[-1] != suffix:
+        await callback.answer('Эта кнопка устарела. Откройте /resume.', show_alert=True)
+        return None
+    return session
 
-    workout = data["workout"]
-    exercise_index = data["exercise_index"]
 
-    postponed_exercises = data.get("postponed_exercises", [])
+@router.callback_query(WorkoutState.waiting_for_exercise_input, F.data.startswith('postpone:'))
+async def postpone_exercise(callback: CallbackQuery, state, user_id: int):
+    session = await valid_control(callback, state, user_id)
+    if session is not None:
+        session = sessions.postpone_exercise(user_id, session['workout_id'], session['revision'])
+        await show_session(callback.message, state, user_id, session)
+        await callback.answer()
 
-    if exercise_index not in postponed_exercises:
-        postponed_exercises.append(exercise_index)
 
-    await state.update_data(
-        postponed_exercises=postponed_exercises
-    )
+@router.callback_query(WorkoutState.waiting_for_exercise_input, F.data.startswith('finish:'))
+async def finish_workout_button(callback: CallbackQuery, state, user_id: int):
+    session = await valid_control(callback, state, user_id)
+    if session is not None:
+        db.finish_workout(user_id, session['workout_id'])
+        await state.clear()
+        safe_sync_workout(user_id, session['workout_id'])
+        await callback.message.answer('Тренировка завершена! 💪')
+        await callback.answer()
 
-    await callback.message.answer(
-        f"Упражнение отложено.\n\n"
-        f"Идём дальше по программе."
-    )
 
-    await move_to_next_exercise(
-        callback.message,
-        state,
-        prefer_postponed=False
-    )
+@router.message(Command('cancel'))
+async def cancel_current_workout(message: Message, state, user_id: int):
+    data = await state.get_data()
+    current = await state.get_state()
+    if current == WorkoutState.correcting_previous.state:
+        await message.answer('Исправление отменено. Прежние подходы сохранены.')
+        await return_to_workout(message, state, user_id, data['workout_id'])
+        return
+    if data.get('editor', {}).get('dirty'):
+        from handlers.program_editor import confirm
+        await confirm(message, state, data['editor'], 'Отменить все несохранённые изменения программы?', ['discard'])
+        return
+    if current and not current.startswith('WorkoutState:'):
+        await state.clear()
+        await message.answer('Текущий ввод отменён.', reply_markup=main_menu)
+        return
+    active = db.get_active_workout(user_id)
+    if active:
+        wid = active[0]
+        revision = db.get_workout_revision(user_id, wid)
+        count = len(db.get_workout_sets(user_id, wid))
+        token = uuid4().hex[:12]
+        await state.set_data(dict(workout_id=wid, delete_revision=revision, delete_token=token))
+        await state.set_state(WorkoutState.confirming_cancel)
+        await message.answer(
+            f'Удалить тренировку «{active[1]}»?\n'
+            f'Будут безвозвратно удалены ВСЕ её записанные подходы ({count}). '
+            'Отменить удаление будет нельзя. Другие тренировки не затрагиваются.\n'
+            'Чтобы завершить с сохранением, используйте /exit.',
+            reply_markup=cancel_workout_controls(token))
+        return
+    await state.clear()
+    await message.answer('Текущий ввод отменён. Активной тренировки нет.', reply_markup=main_menu)
 
+
+@router.message(Command('exit'))
+async def exit_current_workout(message: Message, state, user_id: int):
+    active = db.get_active_workout(user_id)
+    if not active:
+        await message.answer('Нет активной тренировки.')
+        return
+    db.finish_workout(user_id, active[0])
+    await state.clear()
+    safe_sync_workout(user_id, active[0])
+    await message.answer('Тренировка завершена. Введённые подходы сохранены.', reply_markup=main_menu)
+
+
+@router.message(F.text == '📚 История')
+async def history_menu_button(message: Message, user_id: int):
+    rows = db.get_recent_workouts(user_id)
+    await message.answer('Выберите тренировку:' if rows else 'Завершённых тренировок пока нет.',
+                         reply_markup=history_menu(rows) if rows else None)
+
+
+@router.callback_query(F.data.startswith('history:') | F.data.startswith('history_'))
+async def history_selected(callback: CallbackQuery, user_id: int):
+    if callback.data.startswith('history_'):  # Preserve old A/B/C history buttons.
+        workout = db.get_last_workout_by_type(user_id, callback.data.removeprefix('history_'))
+        if workout is None:
+            await callback.answer('Завершённых тренировок нет.')
+            return
+    else:
+        try:
+            workout = db.get_workout(user_id, int(callback.data.split(':')[1]))
+        except ValueError as error:
+            if isinstance(error, db.WorkoutAccessError):
+                raise
+            await callback.answer('Неверная кнопка.')
+            return
+    wid, label, started, finished = workout
+    if finished is None:
+        await callback.answer('Тренировка ещё не завершена.')
+        return
+    text = f"📊 Тренировка {escape(label)}\nНачало: {escape(started)}\nОкончание: {escape(finished)}\n"
+    previous, grouped = object(), []
+    for exercise, exercise_id, number, warmup, weight, reps, occurrence in db.get_history_sets(user_id, wid):
+        key = occurrence if occurrence is not None else (exercise_id, exercise)
+        if key != previous or number == 1:
+            if grouped:
+                text += format_exercise_sets(grouped)
+            text += f'\n<b>{escape(exercise)}</b>\n'
+            grouped = []
+            previous = key
+        grouped.append((warmup, weight, reps))
+    text += format_exercise_sets(grouped)
+    # Telegram message limit; each chunk retains valid HTML by grouping lines.
+    if len(text) > 4000:
+        # Long history is sent as plain text to avoid splitting HTML entities/tags.
+        import re
+        from html import unescape
+        plain = unescape(re.sub(r'</?b>', '', text))
+        for offset in range(0, len(plain), 3900):
+            await callback.message.answer(plain[offset:offset + 3900])
+    else:
+        await callback.message.answer(text, parse_mode='HTML')
     await callback.answer()
 
-@router.message(WorkoutState.waiting_for_exercise_input)
-async def process_exercise_input(message: Message, state):
+
+@router.message(WorkoutState.waiting_for_exercise_input, F.text, ~F.text.startswith('/'))
+async def process_exercise_input(message: Message, state, user_id: int):
     try:
         sets = parse_exercise_input(message.text)
-    except ValueError as e:
-        await message.answer(
-            f"❌ Не удалось распознать подходы.\n\n"
-            f"{e}\n\n"
-            f"Пример правильного ввода:\n"
-            f"20 10\n"
-            f"50 10\n\n"
-            f"60 9 3"
-        )
+    except ValueError as error:
+        await message.answer(f'Не удалось распознать подходы: {error}')
         return
-
     data = await state.get_data()
-
-    workout_id = data["workout_id"]
-    exercise = data["exercise"]
-    exercise_id = data["exercise_id"]
-
-    set_number = 1
-
-    for item in sets:
-        save_set(
-            workout_id=workout_id,
-            exercise=exercise,
-            set_number=set_number,
-            weight=item["weight"],
-            reps=item["reps"],
-            is_warmup=item["is_warmup"],
-            exercise_id=exercise_id,
-        )
-
-        set_number += 1
-
-    await message.answer(
-        f"✅ {exercise} сохранено.\n\n"
-        f"{format_parsed_sets(sets)}"
-    )
-
-    completed_exercises = data.get("completed_exercises", [])
-
-    if data["exercise_index"] not in completed_exercises:
-        completed_exercises.append(data["exercise_index"])
-
-    await state.update_data(
-        set_number=set_number,
-        completed_exercises=completed_exercises
-    )
-
-    await move_to_next_exercise(message, state)
-
-async def move_to_next_exercise(message: Message, state, prefer_postponed=True):
-    data = await state.get_data()
-
-    workout = data["workout"]
-    workout_id = data["workout_id"]
-
-    postponed_exercises = data.get("postponed_exercises", [])
-    completed_exercises = data.get("completed_exercises", [])
-
-    program_progress_index = data.get("program_progress_index", 0)
-
-    next_exercise_index = None
-
-    # При обычном переходе после выполнения:
-    # сначала возвращаем отложенные упражнения.
-    if prefer_postponed and postponed_exercises:
-        next_exercise_index = postponed_exercises.pop(0)
-
-        await state.update_data(
-            postponed_exercises=postponed_exercises
-        )
-
+    result = sessions.complete_exercise(user_id, data['workout_id'], data['revision'], sets)
+    await message.answer(f'Подходы сохранены:\n{format_parsed_sets(sets)}')
+    if result is None:
+        await state.clear()
+        safe_sync_workout(user_id, data['workout_id'])
+        await message.answer('Тренировка завершена! 💪')
     else:
-        # Ищем следующее ещё не выполненное упражнение.
-        next_exercise_index = program_progress_index + 1
+        await show_session(message, state, user_id, result)
 
-        while (
-            next_exercise_index < len(WORKOUTS[workout])
-            and next_exercise_index in completed_exercises
-        ):
-            next_exercise_index += 1
 
-        if next_exercise_index < len(WORKOUTS[workout]):
-            await state.update_data(
-                program_progress_index=next_exercise_index
-            )
+async def return_to_workout(message, state, user_id, workout_id):
+    """Rebuild only the cache; the persisted progress is the source of truth."""
+    try:
+        session = sessions.get_session(user_id, workout_id)
+    except db.WorkoutAccessError:
+        await state.clear()
+        await message.answer('Операция не меняла данные. Эта тренировка уже завершена, недоступна или не имеет снимка. Откройте /resume; для старой активной записи доступны /exit и /cancel.')
+        return
+    except sqlite3.Error:
+        await message.answer('Не удалось прочитать текущую тренировку. Эта операция ничего не удаляет. Повторите /resume позже.')
+        return
+    await show_session(message, state, user_id, session)
 
-        # Основная программа закончилась.
-        else:
-            # Если остались отложенные — возвращаемся к ним.
-            if postponed_exercises:
-                next_exercise_index = postponed_exercises.pop(0)
 
-                await state.update_data(
-                    postponed_exercises=postponed_exercises
-                )
-            else:
-                finish_workout(workout_id)
-
-                await message.answer(
-                    f"Тренировка {workout} завершена! 💪"
-                )
-
-                await state.clear()
-                return
-
-    next_exercise = WORKOUTS[workout][next_exercise_index]
-
-    await state.update_data(
-        exercise_index=next_exercise_index,
-        exercise=next_exercise["name"],
-        exercise_id=next_exercise["exercise_id"],
-    )
-
-    previous_sets = get_last_exercise_sets(next_exercise["exercise_id"])
-
-    previous_text = ""
-
-    if previous_sets:
-        previous_text = "\nПрошлая тренировка:\n"
-
-        for weight, reps in previous_sets:
-            previous_text += f"{weight:g} кг × {reps}\n"
-
-    await state.set_state(WorkoutState.waiting_for_exercise_input)
-
-    await message.answer(
-        f"Следующее упражнение — {next_exercise['name']}.\n"
-        f"{previous_text}\n",
-        reply_markup=postpone_menu
-    )
-
-@router.callback_query(lambda callback: callback.data == "finish_workout")
-async def finish_workout_button(callback: CallbackQuery, state):
-    data = await state.get_data()
-
-    workout_id = data["workout_id"]
-    workout = data["workout"]
-
-    finish_workout(workout_id)
-
-    await callback.message.answer(
-        f"Тренировка {workout} завершена! 💪"
-    )
-
-    await state.clear()
+@router.callback_query(WorkoutState.waiting_for_exercise_input, F.data.startswith('fix:'))
+async def correct_previous(callback: CallbackQuery, state, user_id: int):
+    try:
+        session = await valid_control(callback, state, user_id)
+        if session is None:
+            return
+        previous = sessions.previous_exercise(user_id, session['workout_id'], session['revision'])
+    except db.WorkoutAccessError as error:
+        await callback.message.answer(str(error))
+        await callback.answer()
+        return
+    except (sqlite3.Error, ValueError, KeyError, IndexError):
+        await callback.message.answer('Не удалось безопасно открыть исправление. Подходы не изменены. Повторите позже или откройте /resume.')
+        await callback.answer()
+        return
+    token = uuid4().hex[:12]
+    await state.set_data(dict(workout_id=session['workout_id'], revision=session['revision'],
+                              correction_position=previous['position'], correction_token=token))
+    await state.set_state(WorkoutState.correcting_previous)
+    text = (f"Исправление: {previous['exercise']['name']} (включение №{previous['position'] + 1})\n"
+            f"Сейчас сохранено:\n{format_exercise_sets(previous['sets'])}\n"
+            'Отправьте ВСЕ исправленные подходы одним сообщением в обычном формате. '
+            'Они заменят прежние подходы только этого включения. '
+            'Разминку отделите от рабочих пустой строкой; /help — примеры. '
+            'После записи вернёмся к текущему упражнению.')
+    for offset in range(0, max(0, len(text) - 3900), 3900):
+        await callback.message.answer(text[offset:offset + 3900])
+    await callback.message.answer(text[((len(text) - 1) // 3900) * 3900:], reply_markup=correction_controls(token))
     await callback.answer()
+
+
+@router.callback_query(WorkoutState.correcting_previous, F.data.startswith('endfix:'))
+async def cancel_correction(callback: CallbackQuery, state, user_id: int):
+    data = await state.get_data()
+    if callback.data.split(':', 1)[-1] != data.get('correction_token'):
+        await callback.answer('Кнопка устарела. Откройте /resume.', show_alert=True)
+        return
+    await state.update_data(correction_token=None)
+    await return_to_workout(callback.message, state, user_id, data['workout_id'])
+    await callback.answer('Исправление отменено. Данные не изменились.')
+
+
+@router.message(WorkoutState.correcting_previous, F.text, ~F.text.startswith('/'))
+async def process_correction(message: Message, state, user_id: int):
+    try:
+        sets = parse_exercise_input(message.text)
+    except ValueError as error:
+        await message.answer(f'Не удалось распознать подходы: {error}. Прежние данные сохранены. Повторите ввод или нажмите «Отмена исправления».')
+        return
+    data = await state.get_data()
+    try:
+        result = sessions.replace_previous_sets(user_id, data['workout_id'], data['correction_position'], data['revision'], sets)
+    except db.WorkoutAccessError as error:
+        await message.answer(f'Исправление не выполнено: {error}')
+        await return_to_workout(message, state, user_id, data['workout_id'])
+        return
+    except (ValueError, sqlite3.Error, OverflowError):
+        await message.answer('Не удалось сохранить исправление. Прежние подходы не изменились. Проверьте ввод и повторите или нажмите «Отмена исправления».')
+        return
+    await message.answer('Предыдущие подходы заменены. Возвращаемся к текущему упражнению.')
+    await show_session(message, state, user_id, result)
+
+
+@router.callback_query(WorkoutState.confirming_cancel, F.data.startswith('deleteworkout:') | F.data.startswith('keepworkout:'))
+async def confirm_workout_cancel(callback: CallbackQuery, state, user_id: int):
+    data = await state.get_data()
+    if callback.data.split(':', 1)[-1] != data.get('delete_token'):
+        await callback.answer('Подтверждение устарело. Для удаления снова вызовите /cancel.', show_alert=True)
+        return
+    await state.update_data(delete_token=None)  # Consume before any write.
+    if callback.data.startswith('keepworkout:'):
+        await return_to_workout(callback.message, state, user_id, data['workout_id'])
+        await callback.answer('Удаление отменено.')
+        return
+    try:
+        db.cancel_workout(user_id, data['workout_id'], expected_revision=data['delete_revision'])
+    except db.WorkoutAccessError as error:
+        await callback.message.answer(f'Тренировка не удалена: {error}')
+        await return_to_workout(callback.message, state, user_id, data['workout_id'])
+    except sqlite3.Error:
+        await callback.message.answer('Удаление не выполнено. Данные сохранены; откройте /resume и при необходимости повторите /cancel.')
+    else:
+        await state.clear()
+        await callback.message.answer('Тренировка и все её подходы удалены.', reply_markup=main_menu)
+    await callback.answer()
+
+
+@router.message(WorkoutState.confirming_cancel, ~F.text.startswith('/'))
+async def deletion_confirmation_text(message: Message):
+    await message.answer('Удаление ещё не подтверждено. Нажмите «Удалить тренировку» или «Вернуться к тренировке»; /resume также возвращает к записи.')
+
+
+@router.callback_query(F.data.startswith('postpone:') | F.data.startswith('finish:')
+                       | F.data.startswith('fix:') | F.data.startswith('endfix:')
+                       | F.data.startswith('deleteworkout:') | F.data.startswith('keepworkout:')
+                       | F.data.startswith('correct:') | F.data.startswith('cancelcorrect:')
+                       | F.data.startswith('workout_') | F.data.in_({'postpone_exercise', 'finish_workout'}))
+async def expired_workout_button(callback: CallbackQuery):
+    await callback.answer('Эта кнопка устарела. Откройте тренировку заново или вызовите /resume.', show_alert=True)

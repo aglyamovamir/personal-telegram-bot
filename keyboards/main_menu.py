@@ -13,6 +13,9 @@ main_menu = ReplyKeyboardMarkup(
         ],
         [
             KeyboardButton(text="📚 История")
+        ],
+        [
+            KeyboardButton(text="🗂 Мои программы")
         ]
     ],
     resize_keyboard=True,

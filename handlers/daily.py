@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -8,13 +8,14 @@ from aiogram.types import Message
 from database.db import (
     save_morning_metrics,
     save_evening_metrics,
-    save_bot_settings,
-    get_bot_settings,
+    save_user_settings,
+    get_user_settings,
     get_daily_metrics,
     update_daily_metric,
+    user_today,
 )
 
-from google_sheets import sync_daily_metrics
+from google_sheets import safe_sync_daily_metrics
 from states.daily import (
     DailyMorningState,
     DailyEveningState,
@@ -25,16 +26,15 @@ from scheduler import reschedule_notifications
 
 router = Router()
 
-def configure_scheduler(bot, dp):
-    global _scheduler_bot, _scheduler_dp
+def configure_scheduler(bot):
+    global _scheduler_bot
     _scheduler_bot = bot
-    _scheduler_dp = dp
 
 _scheduler_bot = None
-_scheduler_dp = None
 
 @router.message(Command("morning"))
-async def morning_start(message: Message, state: FSMContext):
+async def morning_start(message: Message, state: FSMContext, user_id: int):
+    await state.update_data(metric_date=user_today(user_id))
     await state.set_state(DailyMorningState.sleep_start)
 
     await message.answer(
@@ -46,7 +46,7 @@ async def morning_start(message: Message, state: FSMContext):
 
 @router.message(DailyMorningState.sleep_start)
 async def morning_sleep_start(message: Message, state: FSMContext):
-    value = message.text.strip()
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -72,7 +72,7 @@ async def morning_sleep_start(message: Message, state: FSMContext):
 
 @router.message(DailyMorningState.wake_time)
 async def morning_wake_time(message: Message, state: FSMContext):
-    value = message.text.strip()
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -98,7 +98,7 @@ async def morning_wake_time(message: Message, state: FSMContext):
 
 @router.message(DailyMorningState.sleep_duration)
 async def morning_sleep_duration(message: Message, state: FSMContext):
-    value = message.text.strip()
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -128,9 +128,9 @@ async def morning_sleep_duration(message: Message, state: FSMContext):
 
 
 @router.message(DailyMorningState.sleep_score)
-async def morning_sleep_score(message: Message, state: FSMContext):
+async def morning_sleep_score(message: Message, state: FSMContext, user_id: int):
     try:
-        score = int(message.text.strip())
+        score = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer(
             "Введи целое число от 0 до 100."
@@ -146,14 +146,15 @@ async def morning_sleep_score(message: Message, state: FSMContext):
     data = await state.get_data()
 
     save_morning_metrics(
-        date=date.today().isoformat(),
+        user_id=user_id,
+        date=data["metric_date"],
         sleep_start=data["sleep_start"],
         wake_time=data["wake_time"],
         sleep_duration_minutes=data["sleep_duration_minutes"],
         sleep_score=score
     )
 
-    sync_daily_metrics(date.today().isoformat())
+    safe_sync_daily_metrics(user_id, data["metric_date"])
 
     hours = data["sleep_duration_minutes"] // 60
     minutes = data["sleep_duration_minutes"] % 60
@@ -169,7 +170,8 @@ async def morning_sleep_score(message: Message, state: FSMContext):
     await state.clear()
 
 @router.message(Command("evening"))
-async def evening_start(message: Message, state: FSMContext):
+async def evening_start(message: Message, state: FSMContext, user_id: int):
+    await state.update_data(metric_date=user_today(user_id))
     await state.set_state(DailyEveningState.productivity)
 
     await message.answer(
@@ -182,7 +184,7 @@ async def evening_start(message: Message, state: FSMContext):
 @router.message(DailyEveningState.productivity)
 async def evening_productivity(message: Message, state: FSMContext):
     try:
-        value = int(message.text.strip())
+        value = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer(
             "Введи целое число от 1 до 10."
@@ -208,7 +210,7 @@ async def evening_productivity(message: Message, state: FSMContext):
 @router.message(DailyEveningState.stress)
 async def evening_stress(message: Message, state: FSMContext):
     try:
-        value = int(message.text.strip())
+        value = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer(
             "Введи целое число от 1 до 10."
@@ -233,7 +235,7 @@ async def evening_stress(message: Message, state: FSMContext):
 @router.message(DailyEveningState.mood)
 async def evening_mood(message: Message, state: FSMContext):
     try:
-        value = int(message.text.strip())
+        value = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer(
             "Введи целое число от 1 до 10."
@@ -258,7 +260,7 @@ async def evening_mood(message: Message, state: FSMContext):
 @router.message(DailyEveningState.steps)
 async def evening_steps(message: Message, state: FSMContext):
     try:
-        value = int(message.text.strip())
+        value = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer(
             "Введи целое число, например: 9240"
@@ -281,8 +283,8 @@ async def evening_steps(message: Message, state: FSMContext):
 
 
 @router.message(DailyEveningState.screen_time)
-async def evening_screen_time(message: Message, state: FSMContext):
-    value = message.text.strip()
+async def evening_screen_time(message: Message, state: FSMContext, user_id: int):
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -302,7 +304,8 @@ async def evening_screen_time(message: Message, state: FSMContext):
     data = await state.get_data()
 
     save_evening_metrics(
-        date=date.today().isoformat(),
+        user_id=user_id,
+        date=data["metric_date"],
         productivity=data["productivity"],
         stress=data["stress"],
         mood=data["mood"],
@@ -310,7 +313,7 @@ async def evening_screen_time(message: Message, state: FSMContext):
         screen_time_minutes=screen_time_minutes
     )
 
-    sync_daily_metrics(date.today().isoformat())
+    safe_sync_daily_metrics(user_id, data["metric_date"])
 
     hours = screen_time_minutes // 60
     minutes = screen_time_minutes % 60
@@ -327,11 +330,11 @@ async def evening_screen_time(message: Message, state: FSMContext):
     await state.clear()
 
 @router.message(Command("change_time"))
-async def change_time_start(message: Message, state: FSMContext):
-    settings = get_bot_settings()
+async def change_time_start(message: Message, state: FSMContext, user_id: int):
+    settings = get_user_settings(user_id)
 
     if settings:
-        chat_id, morning_time, evening_time = settings
+        morning_time, evening_time, _morning_enabled, _evening_enabled = settings
         current = (
             f"Текущее расписание:\n"
             f"🌅 Утро: {morning_time}\n"
@@ -350,7 +353,7 @@ async def change_time_start(message: Message, state: FSMContext):
 
 @router.message(DailyScheduleState.morning_time)
 async def schedule_morning_time(message: Message, state: FSMContext):
-    value = message.text.strip()
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -373,8 +376,8 @@ async def schedule_morning_time(message: Message, state: FSMContext):
 
 
 @router.message(DailyScheduleState.evening_time)
-async def schedule_evening_time(message: Message, state: FSMContext):
-    value = message.text.strip()
+async def schedule_evening_time(message: Message, state: FSMContext, user_id: int):
+    value = (message.text or "").strip()
 
     try:
         hour, minute = map(int, value.split(":"))
@@ -389,14 +392,14 @@ async def schedule_evening_time(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
-    save_bot_settings(
-        chat_id=message.chat.id,
+    save_user_settings(
+        user_id=user_id,
         morning_time=data["morning_time"],
         evening_time=value,
     )
     
-    if _scheduler_bot is not None and _scheduler_dp is not None:
-        reschedule_notifications(_scheduler_bot, _scheduler_dp)
+    if _scheduler_bot is not None:
+        reschedule_notifications(_scheduler_bot, user_id)
 
     await state.clear()
 
@@ -420,10 +423,10 @@ async def edit_day_start(message: Message, state: FSMContext):
 
 
 @router.message(DailyEditState.date)
-async def edit_day_date(message: Message, state: FSMContext):
+async def edit_day_date(message: Message, state: FSMContext, user_id: int):
     try:
         selected_date = datetime.strptime(
-            message.text.strip(), "%d.%m.%Y"
+            (message.text or "").strip(), "%d.%m.%Y"
         ).date().isoformat()
     except (ValueError, AttributeError):
         await message.answer(
@@ -432,7 +435,7 @@ async def edit_day_date(message: Message, state: FSMContext):
         )
         return
 
-    metrics = get_daily_metrics(selected_date)
+    metrics = get_daily_metrics(user_id, selected_date)
 
     if metrics is None:
         await message.answer(
@@ -484,7 +487,7 @@ async def edit_day_date(message: Message, state: FSMContext):
 @router.message(DailyEditState.field)
 async def edit_day_field(message: Message, state: FSMContext):
     try:
-        choice = int(message.text.strip())
+        choice = int((message.text or "").strip())
     except (ValueError, AttributeError):
         await message.answer("Введи номер показателя от 1 до 9.")
         return
@@ -518,10 +521,10 @@ async def edit_day_field(message: Message, state: FSMContext):
 
 
 @router.message(DailyEditState.value)
-async def edit_day_value(message: Message, state: FSMContext):
+async def edit_day_value(message: Message, state: FSMContext, user_id: int):
     data = await state.get_data()
     field = data["edit_field"]
-    value = message.text.strip()
+    value = (message.text or "").strip()
 
     try:
         if field in ("sleep_start", "wake_time"):
@@ -562,6 +565,7 @@ async def edit_day_value(message: Message, state: FSMContext):
     selected_date = data["selected_date"]
 
     updated = update_daily_metric(
+        user_id=user_id,
         date=selected_date,
         field=field,
         value=new_value,
@@ -576,18 +580,11 @@ async def edit_day_value(message: Message, state: FSMContext):
 
     await state.clear()
 
-    try:
-        sync_daily_metrics(selected_date)
-        sync_message = "Данные также синхронизированы с Google Sheets."
-    except Exception:
-        sync_message = (
-            "Данные сохранены в базе, но синхронизация с Google Sheets "
-            "не удалась."
-        )
+    safe_sync_daily_metrics(user_id, selected_date)
 
     await message.answer(
         "✅ Показатель успешно обновлён!\n\n"
         f"Дата: {datetime.strptime(selected_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
         f"Новое значение: {value}\n\n"
-        f"{sync_message}"
+
     )

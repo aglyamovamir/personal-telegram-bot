@@ -1,7 +1,8 @@
+import argparse
 import sqlite3
+from pathlib import Path
 
 
-DB_PATH = "/data/database.db"
 
 
 workouts = [
@@ -389,7 +390,7 @@ workouts = [
 ]
 
 
-def import_workout(connection, workout):
+def import_workout(connection, workout, user_id):
     cursor = connection.cursor()
 
     start = f"{workout['date']}T12:00:00"
@@ -398,9 +399,9 @@ def import_workout(connection, workout):
     cursor.execute("""
         SELECT id
         FROM workouts
-        WHERE workout_type = ?
+        WHERE user_id = ? AND workout_type = ?
         AND started_at LIKE ?
-    """, (workout["type"], f"{workout['date']}%"))
+    """, (user_id, workout["type"], f"{workout['date']}%"))
 
     existing = cursor.fetchone()
 
@@ -415,13 +416,15 @@ def import_workout(connection, workout):
         INSERT INTO workouts (
             workout_type,
             started_at,
-            finished_at
+            finished_at,
+            user_id
         )
-        VALUES (?, ?, ?)
+        VALUES (?, ?, ?, ?)
     """, (
         workout["type"],
         start,
         finish,
+        user_id,
     ))
 
     workout_id = cursor.lastrowid
@@ -454,15 +457,30 @@ def import_workout(connection, workout):
     )
 
 
-connection = sqlite3.connect(DB_PATH)
 
-try:
-    for workout in workouts:
-        import_workout(connection, workout)
+def main():
+    parser = argparse.ArgumentParser(description='Explicit offline history import into a prepared v1 database')
+    parser.add_argument('--database', type=Path, required=True)
+    parser.add_argument('--user-id', type=int, required=True, help='Internal users.id, not Telegram ID')
+    args = parser.parse_args()
+    path = args.database.resolve(strict=True)
+    connection = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True)
+    try:
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.execute('BEGIN IMMEDIATE')
+        if connection.execute('SELECT version FROM schema_migrations ORDER BY version').fetchall() not in ([(1,)], [(1,), (2,)], [(1,), (2,), (3,)], [(1,), (2,), (3,), (4,)]):
+            raise ValueError('Expected schema v1 through v4')
+        if not connection.execute('SELECT 1 FROM users WHERE id=?', (args.user_id,)).fetchone():
+            raise ValueError('Unknown internal user ID')
+        for workout in workouts:
+            import_workout(connection, workout, args.user_id)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
-    connection.commit()
 
-finally:
-    connection.close()
-
-print("Import finished.")
+if __name__ == '__main__':
+    main()

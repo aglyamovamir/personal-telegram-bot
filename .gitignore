@@ -1,6 +1,29 @@
 .env
+.env.*
+!.env.example
 .venv/
 __pycache__/
 credentials/
 *.pyc
 database/database.db
+
+# SQLite files, journals, and database backup copies
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.*
+*.bak
+backups/
+
+# Google service account keys and private keys
+*credentials*.json
+*service-account*.json
+*service_account*.json
+life-bot-*.json
+*.pem
+*.key

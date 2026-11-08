@@ -1,25 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-history_menu = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(
-                text="Тренировка A",
-                callback_data="history_A"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Тренировка B",
-                callback_data="history_B"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="Тренировка C",
-                callback_data="history_C"
-            )
-        ]
-    ]
-)
+def history_menu(workouts):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{label} ({started[:10]})", callback_data=f'history:{wid}')]
+        for wid, label, started, finished in workouts
+    ])

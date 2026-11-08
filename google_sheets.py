@@ -1,17 +1,19 @@
 import os
 import json
 import base64
+import logging
 
 import gspread
 from google.oauth2.service_account import Credentials
 
-from database.db import get_daily_metrics, has_workout_on_date, get_connection
-from workouts.program import WORKOUTS
+from database.db import get_daily_metrics, has_workout_on_date, get_user, get_initial_owner_telegram_id, get_workout, get_workout_sets
 
 SPREADSHEET_ID = "1zqO0E-zAHgr8pAB0Lqcb-txqEnSbbRNq_x69MATF2dM"
 
 
-def get_sheet(sheet_name=None):
+def get_sheet(user_id, sheet_name=None):
+    if not export_enabled(user_id):
+        raise PermissionError("Google Sheets export is disabled for this user")
     credentials_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
 
     if credentials_b64:
@@ -46,7 +48,7 @@ def minutes_to_time(minutes):
     return f"{hours}:{remaining_minutes:02d}"
 
 
-def format_daily_row(metrics):
+def format_daily_row(user_id, metrics):
     (
         date,
         sleep_start,
@@ -61,7 +63,7 @@ def format_daily_row(metrics):
     ) = metrics
 
     date_formatted = ".".join(reversed(date.split("-")))
-    workout = "Да" if has_workout_on_date(date) else "Нет"
+    workout = "Да" if has_workout_on_date(user_id, date) else "Нет"
 
     return [
         date_formatted,
@@ -79,15 +81,17 @@ def format_daily_row(metrics):
 
 
 
-def sync_daily_metrics(date):
-    metrics = get_daily_metrics(date)
+def sync_daily_metrics(user_id, date):
+    if not export_enabled(user_id):
+        return False
+    metrics = get_daily_metrics(user_id, date)
 
     if metrics is None:
         print(f"No daily metrics found for {date}")
         return
 
-    sheet = get_sheet()
-    row = format_daily_row(metrics)
+    sheet = get_sheet(user_id)
+    row = format_daily_row(user_id, metrics)
 
     all_values = sheet.get_all_values()
 
@@ -128,41 +132,12 @@ def sync_daily_metrics(date):
         )
 
 
-def sync_workout(workout_id):
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT id, workout_type, started_at, finished_at
-        FROM workouts
-        WHERE id = ?
-    """, (workout_id,))
-
-    workout = cursor.fetchone()
-
-    if workout is None:
-        connection.close()
-        print(f"Workout not found: {workout_id}")
-        return
-
-    workout_id, workout_type, started_at, finished_at = workout
-
-    cursor.execute("""
-        SELECT
-            id,
-            exercise_id,
-            exercise,
-            set_number,
-            is_warmup,
-            weight,
-            reps
-        FROM workout_sets
-        WHERE workout_id = ?
-        ORDER BY id
-    """, (workout_id,))
-
-    sets = cursor.fetchall()
-    connection.close()
+def sync_workout(user_id, workout_id):
+    if not export_enabled(user_id):
+        return False
+    # Ownership is checked before opening any Google connection.
+    workout_id, workout_type, started_at, finished_at = get_workout(user_id, workout_id)
+    sets = get_workout_sets(user_id, workout_id, export=True)
 
     if finished_at is None:
         print(f"Workout {workout_id} is not finished")
@@ -175,7 +150,14 @@ def sync_workout(workout_id):
     started = datetime.fromisoformat(started_at)
     finished = datetime.fromisoformat(finished_at)
 
-    duration_min = round((finished - started).total_seconds() / 60)
+    # Legacy starts are naive, while new completion timestamps include offset.
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo(get_user(user_id)['timezone'])
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=zone)
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=zone)
+    duration_min = round((finished.timestamp() - started.timestamp()) / 60)
 
     total_sets = len(sets)
     working_sets = sum(1 for row in sets if row[4] == 0)
@@ -197,7 +179,7 @@ def sync_workout(workout_id):
         total_volume
     ]
 
-    workouts_sheet = get_sheet("Workouts")
+    workouts_sheet = get_sheet(user_id, "Workouts")
 
     all_values = workouts_sheet.get_all_values()
 
@@ -221,13 +203,16 @@ def sync_workout(workout_id):
     # ---------- Sets ----------
 
 
-    sets_sheet = get_sheet("Sets")
+    sets_sheet = get_sheet(user_id, "Sets")
 
     existing_sets = sets_sheet.get_all_values()
 
     existing_set_keys = set()
 
     for row in existing_sets[1:]:
+        if len(row) > 5 and row[5]:
+            existing_set_keys.add(('set_id', str(row[5])))
+            continue
         if len(row) >= 8 and row[0] and row[3] and row[6]:
             key = (
                 str(row[0]),
@@ -251,22 +236,14 @@ def sync_workout(workout_id):
         ) = set_row
 
         volume = weight * reps
-        key = (
+        legacy_key = (
             str(workout_id),
             str(exercise_id),
             str(float(set_number))
         )
+        key = ('set_id', str(_set_id))
 
-        exercise_names = {
-            exercise["exercise_id"]: exercise["name"]
-            for exercises in WORKOUTS.values()
-            for exercise in exercises
-        }
-
-        canonical_exercise_name = exercise_names.get(
-            exercise_id,
-            exercise_name
-        )
+        canonical_exercise_name = exercise_name
 
         row = [
             workout_id,
@@ -274,7 +251,7 @@ def sync_workout(workout_id):
             workout_type,
             exercise_id or "",
             canonical_exercise_name,
-            "",
+            _set_id,
             set_number,
             is_warmup,
             weight,
@@ -282,7 +259,7 @@ def sync_workout(workout_id):
             volume
         ]
 
-        if key not in existing_set_keys:
+        if key not in existing_set_keys and legacy_key not in existing_set_keys:
             rows_to_add.append(row)
             existing_set_keys.add(key)
 
@@ -293,3 +270,31 @@ def sync_workout(workout_id):
         f"Sets synced for workout {workout_id}: "
         f"{len(rows_to_add)} new sets"
     )
+
+def export_enabled(user_id):
+    configured = os.getenv('GOOGLE_SHEETS_OWNER_TELEGRAM_ID', '')
+    if not configured.isdecimal() or int(configured) <= 0:
+        return False
+    owner = int(configured)
+    return owner == get_initial_owner_telegram_id() and get_user(user_id)['telegram_user_id'] == owner
+
+
+def safe_sync_daily_metrics(user_id, date):
+    """Export failure must not lose a saved response or leave FSM unfinished."""
+    try:
+        return sync_daily_metrics(user_id, date)
+    except Exception:
+        logging.getLogger(__name__).warning('Daily export failed; SQLite data is saved (internal user %s)', user_id)
+        return False
+
+
+def safe_sync_workout(user_id, workout_id):
+    try:
+        sync_workout(user_id, workout_id)
+        if export_enabled(user_id):
+            workout = get_workout(user_id, workout_id)
+            # Refresh the day flag as well, if metrics already exist.
+            sync_daily_metrics(user_id, workout[2][:10])
+    except Exception:
+        logging.getLogger(__name__).warning('Workout export failed; SQLite data is saved (internal user %s)', user_id)
+        return False
