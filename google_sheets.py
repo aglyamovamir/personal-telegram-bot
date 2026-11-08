@@ -78,6 +78,7 @@ def format_daily_row(metrics):
     ]
 
 
+
 def sync_daily_metrics(date):
     metrics = get_daily_metrics(date)
 
@@ -106,6 +107,26 @@ def sync_daily_metrics(date):
             [row]
         )
         print(f"Daily metrics updated: {date}")
+
+    # Сортировка по дате в формате YYYY-MM-DD
+    all_values = sheet.get_all_values()
+
+    data_rows = all_values[1:]
+
+    data_rows.sort(
+        key=lambda row: (
+            row[0][6:10] + "-" + row[0][3:5] + "-" + row[0][0:2]
+            if row and len(row[0]) == 10
+            else ""
+        )
+    )
+
+    if data_rows:
+        sheet.update(
+            f"A2:K{len(data_rows) + 1}",
+            data_rows
+        )
+
 
 def sync_workout(workout_id):
     connection = get_connection()

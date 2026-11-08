@@ -493,3 +493,41 @@ def get_bot_settings():
     connection.close()
 
     return result
+
+
+def update_daily_metric(date, field, value):
+    allowed_fields = {
+        "sleep_start",
+        "wake_time",
+        "sleep_duration_minutes",
+        "sleep_score",
+        "productivity",
+        "stress",
+        "mood",
+        "steps",
+        "screen_time_minutes",
+    }
+
+    if field not in allowed_fields:
+        raise ValueError("Недопустимое поле")
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    cursor.execute(
+        f"""
+        UPDATE daily_metrics
+        SET {field} = ?, updated_at = ?
+        WHERE date = ?
+        """,
+        (value, now, date)
+    )
+
+    updated = cursor.rowcount > 0
+
+    connection.commit()
+    connection.close()
+
+    return updated

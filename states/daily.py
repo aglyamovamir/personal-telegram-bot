@@ -18,3 +18,9 @@ class DailyEveningState(StatesGroup):
 class DailyScheduleState(StatesGroup):
     morning_time = State()
     evening_time = State()
+
+
+class DailyEditState(StatesGroup):
+    date = State()
+    field = State()
+    value = State()

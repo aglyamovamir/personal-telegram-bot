@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from aiogram import Router
 from aiogram.filters import Command
@@ -10,12 +10,16 @@ from database.db import (
     save_evening_metrics,
     save_bot_settings,
     get_bot_settings,
+    get_daily_metrics,
+    update_daily_metric,
 )
+
 from google_sheets import sync_daily_metrics
 from states.daily import (
     DailyMorningState,
     DailyEveningState,
     DailyScheduleState,
+    DailyEditState,
 )
 from scheduler import reschedule_notifications
 
@@ -400,4 +404,190 @@ async def schedule_evening_time(message: Message, state: FSMContext):
         "✅ Расписание сохранено!\n\n"
         f"🌅 Утро: {data['morning_time']}\n"
         f"🌙 Вечер: {value}"
+    )
+
+
+@router.message(Command("edit_day"))
+async def edit_day_start(message: Message, state: FSMContext):
+    await state.set_state(DailyEditState.date)
+
+    await message.answer(
+        "✏️ Редактирование дневных показателей\n\n"
+        "Введи дату, данные за которую хочешь изменить.\n"
+        "Формат: ДД.ММ.ГГГГ\n"
+        "Например: 01.11.2026"
+    )
+
+
+@router.message(DailyEditState.date)
+async def edit_day_date(message: Message, state: FSMContext):
+    try:
+        selected_date = datetime.strptime(
+            message.text.strip(), "%d.%m.%Y"
+        ).date().isoformat()
+    except (ValueError, AttributeError):
+        await message.answer(
+            "Некорректная дата.\n"
+            "Используй формат ДД.ММ.ГГГГ, например: 01.11.2026"
+        )
+        return
+
+    metrics = get_daily_metrics(selected_date)
+
+    if metrics is None:
+        await message.answer(
+            "За эту дату нет сохранённых показателей."
+        )
+        await state.clear()
+        return
+
+    await state.update_data(selected_date=selected_date)
+    await state.set_state(DailyEditState.field)
+
+    labels = [
+        "Время засыпания",
+        "Время пробуждения",
+        "Продолжительность сна",
+        "Показатель сна",
+        "Продуктивность",
+        "Стресс",
+        "Настроение",
+        "Количество шагов",
+        "Экранное время",
+    ]
+
+    values = metrics[1:]
+
+    lines = []
+    for i, (label, value) in enumerate(zip(labels, values), start=1):
+        if value is None:
+            display_value = "Не заполнено"
+        elif i in (3, 9):
+            display_value = f"{value // 60}:{value % 60:02d}"
+        elif i in (4, 5, 6, 7):
+            display_value = str(value)
+        elif i == 8:
+            display_value = str(value)
+        else:
+            display_value = str(value)
+
+        lines.append(f"{i}. {label}: {display_value}")
+
+    await message.answer(
+        f"Данные за {datetime.strptime(selected_date, '%Y-%m-%d').strftime('%d.%m.%Y')}:\n\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "Введи номер показателя, который хочешь изменить (1–9)."
+    )
+
+
+@router.message(DailyEditState.field)
+async def edit_day_field(message: Message, state: FSMContext):
+    try:
+        choice = int(message.text.strip())
+    except (ValueError, AttributeError):
+        await message.answer("Введи номер показателя от 1 до 9.")
+        return
+
+    fields = {
+        1: ("sleep_start", "Время засыпания", "ЧЧ:ММ, например 23:40"),
+        2: ("wake_time", "Время пробуждения", "ЧЧ:ММ, например 08:10"),
+        3: ("sleep_duration_minutes", "Продолжительность сна", "ЧЧ:ММ, например 7:42"),
+        4: ("sleep_score", "Показатель сна", "Число от 0 до 100"),
+        5: ("productivity", "Продуктивность", "Число от 1 до 10"),
+        6: ("stress", "Стресс", "Число от 1 до 10"),
+        7: ("mood", "Настроение", "Число от 1 до 10"),
+        8: ("steps", "Количество шагов", "Целое неотрицательное число"),
+        9: ("screen_time_minutes", "Экранное время", "ЧЧ:ММ, например 5:12"),
+    }
+
+    if choice not in fields:
+        await message.answer("Введи номер показателя от 1 до 9.")
+        return
+
+    field, label, instruction = fields[choice]
+
+    await state.update_data(edit_field=field)
+    await state.set_state(DailyEditState.value)
+
+    await message.answer(
+        f"Выбран показатель: {label}\n\n"
+        f"Введи новое значение.\n"
+        f"Формат: {instruction}"
+    )
+
+
+@router.message(DailyEditState.value)
+async def edit_day_value(message: Message, state: FSMContext):
+    data = await state.get_data()
+    field = data["edit_field"]
+    value = message.text.strip()
+
+    try:
+        if field in ("sleep_start", "wake_time"):
+            hour, minute = map(int, value.split(":"))
+
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+
+            new_value = f"{hour:02d}:{minute:02d}"
+
+        elif field in ("sleep_duration_minutes", "screen_time_minutes"):
+            hour, minute = map(int, value.split(":"))
+
+            if hour < 0 or not (0 <= minute <= 59):
+                raise ValueError
+
+            new_value = hour * 60 + minute
+
+        else:
+            new_value = int(value)
+
+            if field == "sleep_score" and not 0 <= new_value <= 100:
+                raise ValueError
+
+            if field in ("productivity", "stress", "mood") and not 1 <= new_value <= 10:
+                raise ValueError
+
+            if field == "steps" and new_value < 0:
+                raise ValueError
+
+    except (ValueError, AttributeError):
+        await message.answer(
+            "Некорректное значение.\n"
+            "Проверь формат и попробуй ещё раз."
+        )
+        return
+
+    selected_date = data["selected_date"]
+
+    updated = update_daily_metric(
+        date=selected_date,
+        field=field,
+        value=new_value,
+    )
+
+    if not updated:
+        await message.answer(
+            "Не удалось обновить данные: запись не найдена."
+        )
+        await state.clear()
+        return
+
+    await state.clear()
+
+    try:
+        sync_daily_metrics(selected_date)
+        sync_message = "Данные также синхронизированы с Google Sheets."
+    except Exception:
+        sync_message = (
+            "Данные сохранены в базе, но синхронизация с Google Sheets "
+            "не удалась."
+        )
+
+    await message.answer(
+        "✅ Показатель успешно обновлён!\n\n"
+        f"Дата: {datetime.strptime(selected_date, '%Y-%m-%d').strftime('%d.%m.%Y')}\n"
+        f"Новое значение: {value}\n\n"
+        f"{sync_message}"
     )
