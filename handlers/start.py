@@ -9,7 +9,6 @@ from aiogram.types import CallbackQuery, Message
 from database import db, programs, sessions
 from keyboards.main_menu import main_menu
 from keyboards.workout_menu import workout_menu, workout_controls, correction_controls, cancel_workout_controls
-from keyboards.history_menu import history_menu
 from states.workout import WorkoutState
 from workouts.parser import parse_exercise_input, format_parsed_sets
 from handlers.daily import morning_start, evening_start
@@ -91,6 +90,9 @@ async def show_training(message, state, user_id):
         return
     active = db.get_active_workout(user_id)
     if active:
+        if db.get_workout_revision(user_id, active[0]) is None:
+            await show_legacy_workout(message, active)
+            return
         # Only a workout can be restored over a lost/old workout cache.
         current = await state.get_state()
         if current and current not in workout_states:
@@ -108,9 +110,43 @@ async def show_training(message, state, user_id):
     choices = programs.list_programs(user_id)
     program = programs.get_active_program(user_id)
     if not choices:
-        await message.answer('У вас пока нет программы. Обратитесь к владельцу бота для настройки.')
+        await message.answer('У вас пока нет программы. Откройте «Мои программы» и создайте свою.')
         return
     await message.answer('Выберите программу или день:', reply_markup=workout_menu(choices, program))
+
+
+async def show_legacy_workout(message, active):
+    await message.answer(
+        f'Осталась незавершённая тренировка «{active[1]}» из старой версии. '
+        'Её подходы сохранены. Перед новой тренировкой завершите старую с сохранением. '
+        'Просмотр истории и редактирование программ доступны.',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Завершить с сохранением подходов', callback_data=f'legacyfinish:{active[0]}')],
+            [InlineKeyboardButton(text='Мои программы', callback_data='legacyprograms')],
+        ]))
+
+
+@router.callback_query(F.data == 'legacyprograms')
+async def legacy_programs(callback, state, user_id: int):
+    from handlers.program_editor import editor_start
+    await editor_start(callback.message, state, user_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('legacyfinish:'))
+async def finish_legacy_workout(callback, state, user_id: int):
+    try:
+        wid = int(callback.data.split(':')[1])
+    except ValueError:
+        await callback.answer('Кнопка устарела.')
+        return
+    db.finish_legacy_workout(user_id, wid)
+    if (await state.get_state() or '').startswith('WorkoutState:'):
+        await state.clear()
+    safe_sync_workout(user_id, wid)
+    await callback.message.answer('Старая тренировка завершена. Все записанные подходы сохранены.')
+    await show_training(callback.message, state, user_id)
+    await callback.answer()
 
 
 @router.message(CommandStart())
@@ -174,6 +210,11 @@ async def program_selected(callback: CallbackQuery, user_id: int):
 
 @router.callback_query(F.data.startswith('day:') | (F.data == 'nextday'))
 async def workout_selected(callback: CallbackQuery, state, user_id: int):
+    active = db.get_active_workout(user_id)
+    if active and db.get_workout_revision(user_id, active[0]) is None:
+        await show_legacy_workout(callback.message, active)
+        await callback.answer()
+        return
     if await state.get_state():
         await callback.answer('Сначала закончите текущий ввод или продолжите тренировку через /resume.', show_alert=True)
         return
@@ -289,9 +330,44 @@ async def exit_current_workout(message: Message, state, user_id: int):
 
 @router.message(F.text == '📚 История')
 async def history_menu_button(message: Message, user_id: int):
-    rows = db.get_recent_workouts(user_id)
-    await message.answer('Выберите тренировку:' if rows else 'Завершённых тренировок пока нет.',
-                         reply_markup=history_menu(rows) if rows else None)
+    await show_history_days(message, user_id)
+
+
+async def show_history_days(message, user_id):
+    groups = db.get_history_days(user_id)
+    await message.answer('Какую тренировку посмотреть?' if groups else 'Завершённых тренировок пока нет.',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=g['title'], callback_data='hday:' + g['key'])] for g in groups
+        ]) if groups else None)
+
+
+@router.callback_query(F.data == 'historydays')
+async def history_days_back(callback, user_id: int):
+    await show_history_days(callback.message, user_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('hday:'))
+async def history_day_selected(callback, user_id: int):
+    parts = callback.data.split(':')
+    key = ':'.join(parts[1:3])
+    try:
+        page = int(parts[3]) if len(parts) == 4 else 0
+        if page < 0:
+            raise ValueError
+    except ValueError:
+        await callback.answer('Неверная страница.')
+        return
+    group = next((g for g in db.get_history_days(user_id) if g['key'] == key), None)
+    if group is None:
+        await callback.answer('День недоступен. Откройте историю заново.')
+        return
+    if not group['workouts']:
+        await callback.message.answer('Завершённых тренировок этого дня пока нет.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Назад к выбору дней', callback_data='historydays')]]))
+        await callback.answer()
+        return
+    await show_history_workout(callback, user_id, group['workouts'][0])
 
 
 @router.callback_query(F.data.startswith('history:') | F.data.startswith('history_'))
@@ -309,6 +385,10 @@ async def history_selected(callback: CallbackQuery, user_id: int):
                 raise
             await callback.answer('Неверная кнопка.')
             return
+    await show_history_workout(callback, user_id, workout)
+
+
+async def show_history_workout(callback, user_id, workout):
     wid, label, started, finished = workout
     if finished is None:
         await callback.answer('Тренировка ещё не завершена.')
@@ -335,10 +415,12 @@ async def history_selected(callback: CallbackQuery, user_id: int):
             await callback.message.answer(plain[offset:offset + 3900])
     else:
         await callback.message.answer(text, parse_mode='HTML')
+    buttons = [[InlineKeyboardButton(text='Назад к выбору дней', callback_data='historydays')]]
+    await callback.message.answer('История тренировок', reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await callback.answer()
 
 
-@router.message(WorkoutState.waiting_for_exercise_input, F.text, ~F.text.startswith('/'))
+@router.message(WorkoutState.waiting_for_exercise_input, F.text, ~F.text.startswith('/'), ~F.text.in_({'Мои программы', '🗂 Мои программы'}))
 async def process_exercise_input(message: Message, state, user_id: int):
     try:
         sets = parse_exercise_input(message.text)

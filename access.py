@@ -1,4 +1,4 @@
-"""Closed registration: authorization happens before handlers and DB registration."""
+"""Private-chat access with explicitly enabled public registration."""
 import os
 
 from aiogram import BaseMiddleware
@@ -7,13 +7,21 @@ from aiogram.types import CallbackQuery, Message
 from database.db import WorkoutAccessError, get_or_create_user, get_active_workout
 
 
+def open_registration_enabled():
+    value = os.getenv('OPEN_REGISTRATION', 'false').strip().lower()
+    if value not in {'true', 'false', '1', '0'}:
+        raise RuntimeError('OPEN_REGISTRATION: используйте true или false')
+    return value in {'true', '1'}
+
+
 def allowed_telegram_ids():
+    opened = open_registration_enabled()
     raw = os.getenv('ALLOWED_TELEGRAM_IDS', '')
     try:
         result = {int(value.strip()) for value in raw.split(',') if value.strip()}
     except ValueError as error:
         raise RuntimeError('ALLOWED_TELEGRAM_IDS: нужны Telegram ID через запятую') from error
-    if not result or any(value <= 0 for value in result):
+    if (not result and not opened) or any(value <= 0 for value in result):
         raise RuntimeError('Задайте непустой ALLOWED_TELEGRAM_IDS; публичная регистрация отключена')
     return result
 
@@ -30,7 +38,7 @@ class PrivateAccessMiddleware(BaseMiddleware):
             elif isinstance(message, Message):
                 await message.answer('Доступно только в личном чате с ботом.')
             return
-        if sender.id not in allowed_telegram_ids():
+        if not open_registration_enabled() and sender.id not in allowed_telegram_ids():
             await event.answer('Доступ пока закрыт.')
             return
         user = get_or_create_user(sender.id, message.chat.id)

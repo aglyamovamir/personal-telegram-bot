@@ -61,7 +61,12 @@ async def confirm(message, state, editor, text, action):
 
 async def guard(message, state, user_id):
     current = await state.get_state()
-    if db.get_active_workout(user_id) or (current and not current.startswith('ProgramEditor:')):
+    active = db.get_active_workout(user_id)
+    legacy = active and db.get_workout_revision(user_id, active[0]) is None
+    if legacy and current and current.startswith('WorkoutState:'):
+        await state.clear()
+        current = None
+    if (active and not legacy) or (current and not current.startswith('ProgramEditor:')):
         await message.answer('Сначала закончите текущий ввод или тренировку. Для тренировки: /resume, /exit или /cancel.')
         return False
     return True

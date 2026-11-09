@@ -319,3 +319,48 @@ def get_user_settings(user_id):
 def notification_users():
     with _connection() as c:
         return c.execute('SELECT u.id FROM users u JOIN user_settings s ON s.user_id=u.id WHERE u.private_chat_id IS NOT NULL').fetchall()
+
+
+def finish_legacy_workout(user_id, workout_id):
+    """Owner-checked, atomic completion of an old workout; never deletes sets."""
+    with _connection(True) as c:
+        _workout(c, user_id, workout_id, active=True)
+        if c.execute('SELECT 1 FROM workout_sessions WHERE workout_id=?', (workout_id,)).fetchone():
+            raise WorkoutAccessError('Кнопка устарела: эта тренировка имеет снимок.')
+        _finish_workout(c, user_id, workout_id)
+
+
+def get_history_days(user_id):
+    """Group by stable snapshot day identity; only imported A/B/C absorbs legacy labels."""
+    import json
+    with _connection() as c:
+        _user(c, user_id)
+        groups = {}
+        legacy_days = {}
+        imported = c.execute("SELECT program_id FROM program_imports WHERE user_id=? AND source='legacy-workouts-v1'", (user_id,)).fetchone()
+        if imported and imported[0] is not None:
+            legacy_days = dict(c.execute('SELECT name,id FROM program_days WHERE program_id=?', (imported[0],)))
+        for pid, pname, did, name in c.execute(
+                'SELECT p.id,p.name,d.id,d.name FROM programs p JOIN program_days d ON d.program_id=p.id WHERE p.user_id=? AND p.archived_at IS NULL ORDER BY p.id,d.position', (user_id,)):
+            groups[f'd:{did}'] = dict(key=f'd:{did}', name=name, program=pname, workouts=[])
+        records = c.execute('SELECT w.id,w.workout_type,w.started_at,w.finished_at,s.snapshot FROM workouts w LEFT JOIN workout_sessions s ON s.workout_id=w.id WHERE w.user_id=? AND w.finished_at IS NOT NULL ORDER BY w.started_at DESC,w.id DESC', (user_id,)).fetchall()
+        legacy_keys = {}
+        for wid, label, started, finished, raw in records:
+            if raw is not None:
+                snapshot = json.loads(raw)
+                key = 'd:' + str(snapshot['day_id'])
+                name, pname = snapshot['day_name'], snapshot['program_name']
+            elif label in legacy_days:
+                key = 'd:' + str(legacy_days[label])
+                name, pname = label, 'A/B/C'
+            else:
+                key = legacy_keys.setdefault(label, 'l:' + str(wid))
+                name, pname = label, 'Старая история'
+            group = groups.setdefault(key, dict(key=key, name=name, program=pname, workouts=[]))
+            group['workouts'].append((wid, label, started, finished))
+        counts = {}
+        for group in groups.values():
+            counts[group['name']] = counts.get(group['name'], 0) + 1
+        for group in groups.values():
+            group['title'] = group['name'] if counts[group['name']] == 1 else f"{group['name']} · {group['program']} [{group['key'][2:]}]"
+        return list(groups.values())

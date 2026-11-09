@@ -4,7 +4,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram.exceptions import TelegramForbiddenError
 
-from access import allowed_telegram_ids
+from access import allowed_telegram_ids, open_registration_enabled
 from database.db import get_user, get_user_settings, notification_users
 
 scheduler = AsyncIOScheduler(timezone='Europe/Moscow')
@@ -16,7 +16,7 @@ async def send_reminder(bot, user_id, period):
     settings = get_user_settings(user_id)
     offset = 0 if period == 'morning' else 1
     if (not settings or not settings[offset + 2]
-            or user['telegram_user_id'] not in allowed_telegram_ids()
+            or (not open_registration_enabled() and user['telegram_user_id'] not in allowed_telegram_ids())
             or user['private_chat_id'] != user['telegram_user_id']):
         return
     text = ('🌅 Доброе утро! Начать опрос: /morning'
@@ -35,7 +35,7 @@ def reschedule_notifications(bot, user_id):
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
         if (not settings or not settings[offset + 2]
-                or user['telegram_user_id'] not in allowed_telegram_ids()
+                or (not open_registration_enabled() and user['telegram_user_id'] not in allowed_telegram_ids())
                 or user['private_chat_id'] != user['telegram_user_id']):
             continue
         hour, minute = map(int, settings[offset].split(':'))
