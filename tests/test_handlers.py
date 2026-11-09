@@ -18,7 +18,7 @@ from database.migrations import migrate
 from database.migrations_v2 import migrate_v2
 from database.migrations_v3 import migrate_v3
 from database.migrations_v4 import migrate_v4
-from handlers import start, daily, today, program_editor
+from handlers import start, daily, today, program_editor, analytics
 from legacy_schema import create_legacy_database
 from scheduler import send_reminder, reschedule_notifications
 from states.workout import WorkoutState
@@ -73,6 +73,9 @@ class TelegramTestCase(unittest.IsolatedAsyncioTestCase):
         google = patch('google_sheets.gspread.authorize', side_effect=AssertionError('Google network forbidden'))
         self.authorize = google.start()
         self.addCleanup(google.stop)
+        charts = patch('handlers.analytics.render_chart', return_value=b'fake-png')
+        charts.start()
+        self.addCleanup(charts.stop)
         self.session = FakeSession()
         self.bot = Bot(token='123456:FAKE_TEST_TOKEN', session=self.session)
         self.dp = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
@@ -80,7 +83,7 @@ class TelegramTestCase(unittest.IsolatedAsyncioTestCase):
         self.dp.callback_query.outer_middleware(PrivateAccessMiddleware())
         # Copy registered handlers to fresh routers (global routers cannot be
         # attached to multiple dispatchers). No production startup is invoked.
-        for module in (start, program_editor, daily, today):
+        for module in (analytics, start, program_editor, daily, today):
             router = Router()
             router.message.handlers.extend(module.router.message.handlers)
             router.callback_query.handlers.extend(module.router.callback_query.handlers)

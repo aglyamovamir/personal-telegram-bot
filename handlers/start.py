@@ -12,7 +12,7 @@ from states.workout import WorkoutState
 from workouts.parser import parse_exercise_input
 from workouts import presentation
 from handlers.daily import morning_start, evening_start
-from handlers.today import today_handler
+from handlers.analytics import show_menu as show_analytics, send_completion_report
 from google_sheets import safe_sync_workout
 from scheduler import reschedule_notifications
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -230,7 +230,7 @@ async def unfinished_workout_action(callback, state, user_id: int):
             sessions.finish_unfinished_workout(user_id, workout_id, card['fingerprint'])
             await clear_workout_state(state, workout_id)
             safe_sync_workout(user_id, workout_id)
-            await callback.message.answer('Тренировка завершена. Все записанные подходы сохранены.')
+            await send_completion_report(callback.message, user_id, workout_id)
             await show_training(callback.message, state, user_id)
     except db.WorkoutAccessError as error:
         await callback.message.answer(str(error))
@@ -267,7 +267,7 @@ async def finish_legacy_workout(callback, state, user_id: int):
     db.finish_legacy_workout(user_id, wid)
     await clear_workout_state(state, wid)
     safe_sync_workout(user_id, wid)
-    await callback.message.answer('Старая тренировка завершена. Все записанные подходы сохранены.')
+    await send_completion_report(callback.message, user_id, wid)
     await show_training(callback.message, state, user_id)
     await callback.answer()
 
@@ -288,9 +288,10 @@ async def evening_menu_button(message: Message, state, user_id: int):
     await evening_start(message, state, user_id)
 
 
-@router.message(F.text == '📊 Сегодня')
-async def today_menu_button(message: Message, user_id: int):
-    await today_handler(message, user_id)
+@router.message(F.text.in_({'📊 Сегодня', '📊 Аналитика'}))
+@router.message(Command('analytics', 'today'))
+async def today_menu_button(message: Message, state, user_id: int):
+    await show_analytics(message, user_id, state)
 
 
 @router.message(F.text == '🏋️ Тренировка')
@@ -407,7 +408,7 @@ async def finish_workout_button(callback: CallbackQuery, state, user_id: int):
         sessions.finish_unfinished_workout(user_id, session['workout_id'], details['fingerprint'])
         await clear_workout_state(state, session['workout_id'])
         safe_sync_workout(user_id, session['workout_id'])
-        await callback.message.answer('Тренировка завершена! 💪')
+        await send_completion_report(callback.message, user_id, session['workout_id'])
         await show_training(callback.message, state, user_id)
         await callback.answer()
 
@@ -456,7 +457,7 @@ async def exit_current_workout(message: Message, state, user_id: int):
     sessions.finish_unfinished_workout(user_id, active[0], details['fingerprint'])
     await clear_workout_state(state, active[0])
     safe_sync_workout(user_id, active[0])
-    await message.answer('Тренировка завершена. Введённые подходы сохранены.', reply_markup=main_menu)
+    await send_completion_report(message, user_id, active[0])
     await show_training(message, state, user_id)
 
 
@@ -538,7 +539,7 @@ async def show_history_workout(callback, user_id, workout):
     await callback.answer()
 
 
-@router.message(WorkoutState.waiting_for_exercise_input, F.text, ~F.text.startswith('/'), ~F.text.in_({'Мои программы', '🗂 Мои программы'}))
+@router.message(WorkoutState.waiting_for_exercise_input, F.text, ~F.text.startswith('/'), ~F.text.in_({'Мои программы', '🗂 Мои программы', '📊 Аналитика'}))
 async def process_exercise_input(message: Message, state, user_id: int):
     await state.update_data(exercise_input=message.text)
     try:
@@ -565,7 +566,7 @@ async def process_exercise_input(message: Message, state, user_id: int):
     if result is None:
         await clear_workout_state(state, data['workout_id'])
         safe_sync_workout(user_id, data['workout_id'])
-        await message.answer('Тренировка завершена! 💪')
+        await send_completion_report(message, user_id, data['workout_id'])
     else:
         await show_session(message, state, user_id, result)
 

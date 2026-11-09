@@ -3,3 +3,4 @@ python-dotenv
 gspread
 google-auth
 APScheduler
+matplotlib>=3.10,<4

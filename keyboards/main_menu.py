@@ -9,7 +9,7 @@ main_menu = ReplyKeyboardMarkup(
         ],
         [
             KeyboardButton(text="🏋️ Тренировка"),
-            KeyboardButton(text="📊 Сегодня")
+            KeyboardButton(text="📊 Аналитика")
         ],
         [
             KeyboardButton(text="📚 История")

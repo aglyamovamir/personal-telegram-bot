@@ -55,7 +55,7 @@ class PrivateAccessMiddleware(BaseMiddleware):
             await message.answer('Сначала закончите текущий ввод. Для тренировки: /exit или /cancel.')
             return
         # Unknown commands and menu texts should never be parsed as numeric input.
-        known_commands = {'/start', '/help', '/today', '/cancel', '/exit', '/resume', '/programs'}
+        known_commands = {'/start', '/help', '/today', '/analytics', '/cancel', '/exit', '/resume', '/programs'}
         if current and not callback and text.startswith('/') and not starts_dialog:
             command = text.split()[0].split('@')[0]
             if command not in known_commands:
