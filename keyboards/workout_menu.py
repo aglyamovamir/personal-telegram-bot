@@ -6,8 +6,8 @@ def workout_menu(programs, active, program_page=0, day_page=0):
     day_page = max(0, min(day_page, max(0, (len(days) - 1) // 12)))
     rows = []
     if active:
-        rows.append([InlineKeyboardButton(text="Следующий день по порядку", callback_data='previewnext')])
-        rows.extend([[InlineKeyboardButton(text=d['name'], callback_data=f"previewday:{d['id']}")]
+        rows.append([InlineKeyboardButton(text="Следующий день по порядку", callback_data='nextday')])
+        rows.extend([[InlineKeyboardButton(text=d['name'], callback_data=f"day:{d['id']}")]
                      for d in days[day_page * 12:(day_page + 1) * 12]])
         if day_page:
             rows.append([InlineKeyboardButton(text='← Дни', callback_data=f'trainingpage:{program_page}:{day_page - 1}')])
@@ -22,12 +22,12 @@ def workout_menu(programs, active, program_page=0, day_page=0):
 
 def workout_controls(workout_id, exercise_index, token, *, can_correct=False):
     suffix = f'{workout_id}:{exercise_index}:{token}'
-    actions = [InlineKeyboardButton(text="⏭ Отложить упражнение", callback_data=f'postpone:{suffix}')]
+    actions = [InlineKeyboardButton(text="Отложить упражнение", callback_data=f'postpone:{suffix}')]
     if can_correct:
-        actions.append(InlineKeyboardButton(text='✏️ Исправить предыдущее', callback_data=f'fix:{suffix}'))
+        actions.append(InlineKeyboardButton(text='Исправить предыдущее', callback_data=f'fix:{suffix}'))
     return InlineKeyboardMarkup(inline_keyboard=[
         actions,
-        [InlineKeyboardButton(text="🏁 Завершить тренировку", callback_data=f'finish:{suffix}')],
+        [InlineKeyboardButton(text="Завершить тренировку", callback_data=f'finish:{suffix}')],
     ])
 
 

@@ -39,7 +39,7 @@ class UnfinishedWorkoutTests(TelegramTestCase):
         await self.send(111, '🏋️ Тренировка')
         card = self.messages()[-1]
         self.assertIn('Незавершённая тренировка B', card.text)
-        self.assertIn('8 ноября 2026, 18:30 (Europe/Moscow)', card.text)
+        self.assertIn('08.11.2026 18:30 (Europe/Moscow)', card.text)
         self.assertIn('С начала прошло:', card.text)
         self.assertIn('Записано: 2 упражнения, 5 подходов', card.text)
         self.assertIn('Разминка: 20 кг × 10', card.text)
@@ -79,7 +79,7 @@ class UnfinishedWorkoutTests(TelegramTestCase):
             c.execute('UPDATE workouts SET started_at=? WHERE id=?', ('2026-11-08T15:30:00+00:00', wid))
         details = sessions.get_unfinished_workout(self.uid, wid)
         text, _ = views.compact_card(details, now=datetime(2026, 11, 9, 17, 30, tzinfo=timezone.utc))
-        self.assertIn('8 ноября 2026, 20:30 (Asia/Yekaterinburg)', text)
+        self.assertIn('08.11.2026 20:30 (Asia/Yekaterinburg)', text)
         self.assertIn('С начала прошло: 1 день 2 часа', text)
         self.assertNotIn('длительность', text.lower())
         self.assertNotIn('Окончание', text)

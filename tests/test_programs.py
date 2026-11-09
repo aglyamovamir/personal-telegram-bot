@@ -226,7 +226,7 @@ class ProgramTests(TemporaryDatabaseTestCase):
         seen = []
         for page in range(5):
             menu = workout_menu(programs.list_programs(self.user_id), program, 0, page)
-            seen.extend(int(b.callback_data.split(':')[1]) for row in menu.inline_keyboard for b in row if b.callback_data.startswith('previewday:'))
+            seen.extend(int(b.callback_data.split(':')[1]) for row in menu.inline_keyboard for b in row if b.callback_data.startswith('day:'))
         self.assertTrue({d['id'] for d in program['days']} <= set(seen))
 
 

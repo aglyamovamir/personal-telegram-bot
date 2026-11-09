@@ -47,7 +47,8 @@ class CorrectionCompatibilityTests(TelegramTestCase):
         before = sessions.get_session(self.uid, wid)
         rows = db.get_workout_sets(self.uid, wid)
         card = next(r for r in reversed(self.session.requests) if isinstance(r, SendMessage))
-        self.assertIn('ОДНИМ сообщением', card.text)
+        self.assertIn('<b>Следующее упражнение —', card.text)
+        self.assertNotIn('59 10 3', card.text)  # Initial-only hint does not repeat.
         self.assertNotIn('Необязательный план:', card.text)  # Legacy plans are not prescriptions.
         self.assertFalse(any(b.callback_data.startswith(('correct:', 'cancelcorrect:')) for row in card.reply_markup.inline_keyboard for b in row))
         self.assertTrue(any(b.callback_data.startswith('fix:') for row in card.reply_markup.inline_keyboard for b in row))

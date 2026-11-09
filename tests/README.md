@@ -61,3 +61,13 @@ test_program_ux_integration.py и обновлённых test_editor.py/test_cat
 
 Результаты последнего полного прогона и сценарий ручной проверки:
 [PROGRAM_EDITOR_UX.md](../PROGRAM_EDITOR_UX.md).
+
+## UX-hotfix истории и тренировки
+
+Добавлены test_workout_ux_hotfix.py (23 Dispatcher-сценария),
+test_workout_ux_database.py (10 проверок данных) и test_workout_presentation.py
+(8 проверок отображения). Проверяются прямой запуск дня, история без служебного
+сообщения, компактные карточки и однократная инструкция, фактический прошлый
+результат по ID через все дни, границы включений, даты/числа и длинный HTML.
+Полный итог: 181 тест проходит. Причины, примеры сообщений и ручная проверка:
+[WORKOUT_UX_HOTFIX.md](../WORKOUT_UX_HOTFIX.md).

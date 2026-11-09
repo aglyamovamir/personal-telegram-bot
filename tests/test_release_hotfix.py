@@ -160,9 +160,8 @@ class ReleaseHotfixTests(EditorTestCase):
         group = next(g for g in db.get_history_days(self.uid) if g['name'] == 'A')
         self.session.requests.clear()
         await self.click(111, 'hday:' + group['key'])
-        markup = next(r.reply_markup for r in reversed(self.session.requests)
-                      if isinstance(r, SendMessage) and r.chat_id == 111)
-        callbacks = [b.callback_data for row in markup.inline_keyboard for b in row]
-        self.assertEqual(callbacks, ['historydays'])
+        actual_cards = [r for r in self.session.requests if isinstance(r, SendMessage) and r.chat_id == 111]
+        self.assertEqual(len(actual_cards), 1)
+        self.assertIsNone(actual_cards[0].reply_markup)
         self.assertTrue(any('Latest by date' in t for t in self.texts()))
         self.assertFalse(any('Wrong by ID' in t for t in self.texts()))

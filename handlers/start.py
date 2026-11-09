@@ -1,4 +1,3 @@
-from html import escape
 from uuid import uuid4
 import sqlite3
 
@@ -10,13 +9,13 @@ from database import db, programs, sessions
 from keyboards.main_menu import main_menu
 from keyboards.workout_menu import workout_menu, workout_controls, correction_controls, cancel_workout_controls
 from states.workout import WorkoutState
-from workouts.parser import parse_exercise_input, format_parsed_sets
+from workouts.parser import parse_exercise_input
+from workouts import presentation
 from handlers.daily import morning_start, evening_start
 from handlers.today import today_handler
 from google_sheets import safe_sync_workout
 from scheduler import reschedule_notifications
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from handlers.program_editor_views import day_summary
 from handlers import unfinished_workout_views as unfinished_views
 from handlers.workout_navigation import park_workout_state, clear_workout_state
 
@@ -54,12 +53,12 @@ def format_exercise_sets(sets):
     for is_warmup, weight, reps, count in groups:
         label = "Разминка" if is_warmup else "Рабочий"
         count_text = f" × {count}" if count > 1 else ""
-        text += f"{label}: {weight:g} кг × {reps}{count_text}\n"
+        text += f"{label}: {presentation.format_number(weight)} кг × {presentation.format_number(reps)}{count_text}\n"
 
     return text
 
 
-async def show_session(message, state, user_id, session):
+async def show_session(message, state, user_id, session, *, initial=False):
     progress = session['progress']
     index = progress['current']
     exercise = session['snapshot']['exercises'][index]
@@ -70,17 +69,16 @@ async def show_session(message, state, user_id, session):
     data.pop('parked_workout', None)
     await state.set_data(data)
     await state.set_state(WorkoutState.waiting_for_exercise_input)
-    previous = db.get_last_exercise_sets(user_id, exercise['exercise_id'])
-    previous_text = '\nПрошлые результаты:\n' + '\n'.join(f'{w:g} кг × {r}' for w, r in previous) if previous else ''
-    await message.answer(
-        f"Тренировка: {session['snapshot']['day_name']}\n"
-        f"Упражнение {index + 1}: {exercise['name']}\n"
-        f"Выполнено: {len(progress['completed'])} из {len(session['snapshot']['exercises'])}. Отложено: {len(progress['postponed'])}.\n"
-        f"Отправьте ВСЕ выполненные подходы этого упражнения ОДНИМ сообщением. Затем сразу перейдём дальше.\n"
-        f"Формат: вес повторения [количество], например 50 8 3.\n"
-        f"Разминку отделите от рабочих пустой строкой; без неё все подходы рабочие. /help — примеры.{previous_text}",
-        reply_markup=workout_controls(session['workout_id'], index, session['revision'], can_correct=bool(progress['completed'])),
-    )
+    previous = db.get_previous_exercise_result(user_id, exercise['exercise_id'])
+    text = presentation.current_exercise_card(
+        exercise['name'], len(progress['completed']), len(session['snapshot']['exercises']),
+        len(progress['postponed']), previous=previous, initial=initial)
+    chunks = presentation.html_chunks(text)
+    controls = workout_controls(session['workout_id'], index, session['revision'],
+                                can_correct=bool(progress['completed']))
+    for number, chunk in enumerate(chunks):
+        await message.answer(chunk, parse_mode='HTML',
+                             reply_markup=controls if number == len(chunks) - 1 else None)
 
 
 async def show_training(message, state, user_id, *, show_unfinished=True):
@@ -354,7 +352,8 @@ async def program_selected(callback: CallbackQuery, user_id: int):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith('day:') | (F.data == 'nextday'))
+@router.callback_query(F.data.startswith('day:') | (F.data == 'nextday')
+                       | F.data.startswith('previewday:') | (F.data == 'previewnext'))
 async def workout_selected(callback: CallbackQuery, state, user_id: int):
     active = db.get_active_workout(user_id)
     if active:
@@ -365,32 +364,12 @@ async def workout_selected(callback: CallbackQuery, state, user_id: int):
         await callback.answer('Сначала закончите текущий ввод или продолжите тренировку через /resume.', show_alert=True)
         return
     try:
-        day_id = None if callback.data == 'nextday' else int(callback.data.split(':')[1])
+        day_id = None if callback.data in {'nextday', 'previewnext'} else int(callback.data.split(':')[1])
     except ValueError:
         await callback.answer('Неверный день.')
         return
     session = sessions.start_day(user_id, day_id)
-    await show_session(callback.message, state, user_id, session)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith('previewday:') | (F.data == 'previewnext'))
-async def preview_day(callback: CallbackQuery, user_id: int):
-    try:
-        day = programs.next_day(user_id) if callback.data == 'previewnext' else programs.get_day(user_id, int(callback.data.split(':')[1]))
-    except ValueError as error:
-        if isinstance(error, db.WorkoutAccessError):
-            raise
-        await callback.answer('Неверный день.')
-        return
-    text = day_summary(day)
-    for offset in range(0, len(text), 3900):
-        await callback.message.answer(text[offset:offset + 3900])
-    await callback.message.answer('Начать этот день? Плановые подходы не считаются выполненными.',
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='Начать тренировку', callback_data=f"day:{day['id']}")],
-            [InlineKeyboardButton(text='Назад', callback_data='training')],
-        ]))
+    await show_session(callback.message, state, user_id, session, initial=True)
     await callback.answer()
 
 
@@ -412,6 +391,7 @@ async def postpone_exercise(callback: CallbackQuery, state, user_id: int):
     session = await valid_control(callback, state, user_id)
     if session is not None:
         session = sessions.postpone_exercise(user_id, session['workout_id'], session['revision'])
+        await callback.message.answer('Упражнение отложено.\n\nИдём дальше по программе.')
         await show_session(callback.message, state, user_id, session)
         await callback.answer()
 
@@ -515,8 +495,7 @@ async def history_day_selected(callback, user_id: int):
         await callback.answer('День недоступен. Откройте историю заново.')
         return
     if not group['workouts']:
-        await callback.message.answer('Завершённых тренировок этого дня пока нет.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='Назад к выбору дней', callback_data='historydays')]]))
+        await callback.message.answer('Завершённых тренировок этого дня пока нет.')
         await callback.answer()
         return
     await show_history_workout(callback, user_id, group['workouts'][0])
@@ -525,10 +504,19 @@ async def history_day_selected(callback, user_id: int):
 @router.callback_query(F.data.startswith('history:') | F.data.startswith('history_'))
 async def history_selected(callback: CallbackQuery, user_id: int):
     if callback.data.startswith('history_'):  # Preserve old A/B/C history buttons.
-        workout = db.get_last_workout_by_type(user_id, callback.data.removeprefix('history_'))
-        if workout is None:
-            await callback.answer('Завершённых тренировок нет.')
+        label = callback.data.removeprefix('history_')
+        groups = [group for group in db.get_history_days(user_id) if group['name'] == label]
+        if len(groups) > 1:
+            # Old buttons carry only a label, so they cannot distinguish owned
+            # days with the same name. Ask for the actual day identity.
+            await show_history_days(callback.message, user_id)
+            await callback.answer()
             return
+        if not groups or not groups[0]['workouts']:
+            await callback.message.answer('Завершённых тренировок этого дня пока нет.')
+            await callback.answer()
+            return
+        workout = groups[0]['workouts'][0]
     else:
         try:
             workout = db.get_workout(user_id, int(callback.data.split(':')[1]))
@@ -541,34 +529,12 @@ async def history_selected(callback: CallbackQuery, user_id: int):
 
 
 async def show_history_workout(callback, user_id, workout):
-    wid, label, started, finished = workout
-    if finished is None:
+    if workout[3] is None:
         await callback.answer('Тренировка ещё не завершена.')
         return
-    text = f"📊 Тренировка {escape(label)}\nНачало: {escape(started)}\nОкончание: {escape(finished)}\n"
-    previous, grouped = object(), []
-    for exercise, exercise_id, number, warmup, weight, reps, occurrence in db.get_history_sets(user_id, wid):
-        key = occurrence if occurrence is not None else (exercise_id, exercise)
-        if key != previous or number == 1:
-            if grouped:
-                text += format_exercise_sets(grouped)
-            text += f'\n<b>{escape(exercise)}</b>\n'
-            grouped = []
-            previous = key
-        grouped.append((warmup, weight, reps))
-    text += format_exercise_sets(grouped)
-    # Telegram message limit; each chunk retains valid HTML by grouping lines.
-    if len(text) > 4000:
-        # Long history is sent as plain text to avoid splitting HTML entities/tags.
-        import re
-        from html import unescape
-        plain = unescape(re.sub(r'</?b>', '', text))
-        for offset in range(0, len(plain), 3900):
-            await callback.message.answer(plain[offset:offset + 3900])
-    else:
-        await callback.message.answer(text, parse_mode='HTML')
-    buttons = [[InlineKeyboardButton(text='Назад к выбору дней', callback_data='historydays')]]
-    await callback.message.answer('История тренировок', reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    history = db.get_history_workout(user_id, workout[0])
+    for chunk in presentation.completed_history_chunks(history):
+        await callback.message.answer(chunk, parse_mode='HTML')
     await callback.answer()
 
 
@@ -581,9 +547,21 @@ async def process_exercise_input(message: Message, state, user_id: int):
         await message.answer(f'Не удалось распознать подходы: {error}')
         return
     data = await state.get_data()
-    result = sessions.complete_exercise(user_id, data['workout_id'], data['revision'], sets)
+    try:
+        session = sessions.get_session(user_id, data['workout_id'])
+        exercise = session['snapshot']['exercises'][session['progress']['current']]
+        result = sessions.complete_exercise(user_id, data['workout_id'], data['revision'], sets)
+    except db.WorkoutAccessError as error:
+        await message.answer(f'Подходы не сохранены: {error}')
+        await return_to_workout(message, state, user_id, data['workout_id'])
+        return
+    except (sqlite3.Error, ValueError, OverflowError):
+        await message.answer('Не удалось сохранить подходы. Прежние данные не изменены. Повторите ввод или откройте /resume.')
+        return
     await state.update_data(exercise_input=None)
-    await message.answer(f'Подходы сохранены:\n{format_parsed_sets(sets)}')
+    confirmation = presentation.saved_sets_confirmation(exercise['name'], sets)
+    for chunk in presentation.html_chunks(confirmation):
+        await message.answer(chunk, parse_mode='HTML')
     if result is None:
         await clear_workout_state(state, data['workout_id'])
         safe_sync_workout(user_id, data['workout_id'])

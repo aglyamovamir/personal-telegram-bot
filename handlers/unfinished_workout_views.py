@@ -1,10 +1,7 @@
 """Display only recorded facts; elapsed time is never workout duration."""
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
-
-MONTHS = ('января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-          'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря')
+from workouts.presentation import (format_date, format_datetime, format_number,
+                                   local_datetime, timezone_label)
 
 
 def plural(number, forms):
@@ -28,35 +25,22 @@ def elapsed_since(started, now):
 
 
 def start_time(details):
-    zone = ZoneInfo(details['timezone'])
-    try:
-        started = datetime.fromisoformat(details['started_at'])
-    except (TypeError, ValueError):
-        return None, False
-    naive = started.tzinfo is None
-    # The legacy importer preserves wall-clock timestamps. This is the same
-    # convention used by db.has_workout_on_date; the card explicitly labels it.
-    if naive:
-        started = started.replace(tzinfo=zone)
-    return started.astimezone(zone), naive
+    return local_datetime(details.get('started_at'), details.get('timezone'))
 
 
 def date_label(details, *, include_time=True):
-    started, _ = start_time(details)
-    if started is None:
-        return 'дата не сохранена'
-    date = f'{started.day} {MONTHS[started.month - 1]} {started.year}'
-    return date + started.strftime(', %H:%M') if include_time else date
+    formatter = format_datetime if include_time else format_date
+    return formatter(details.get('started_at'), details.get('timezone'))
 
 
 def metadata(details, *, now=None):
     started, naive = start_time(details)
-    now = now or datetime.now(timezone.utc)
+    now, _ = local_datetime(now or datetime.now(timezone.utc), details.get('timezone'))
     lines = [f"Незавершённая тренировка {details['day_name']}"]
     if details.get('program_name'):
         lines.append(f"Программа: {details['program_name']}")
-    lines.append(f"Начата: {date_label(details)} ({details['timezone']})")
-    lines.append('С начала прошло: ' + (elapsed_since(started, now) if started else 'неизвестно'))
+    lines.append(f"Начата: {date_label(details)} ({timezone_label(details.get('timezone'))})")
+    lines.append('С начала прошло: ' + (elapsed_since(started, now) if started and now else 'неизвестно'))
     count, sets = details['exercise_count'], details['set_count']
     lines.append(f"Записано: {count} {plural(count, ('упражнение', 'упражнения', 'упражнений'))}, "
                  f"{sets} {plural(sets, ('подход', 'подхода', 'подходов'))}")
@@ -67,8 +51,9 @@ def metadata(details, *, now=None):
 
 def format_set(warmup, weight, reps, count=1):
     label = 'Разминка' if warmup else 'Рабочий' if count == 1 else 'Рабочие'
-    weight_text = f'{weight:g}' if isinstance(weight, (int, float)) else 'вес не записан'
-    value = f'{label}: {weight_text} кг × {reps}'
+    weight_text = format_number(weight, missing='')
+    weight_text = f'{weight_text} кг' if weight_text else 'вес не записан'
+    value = f'{label}: {weight_text} × {format_number(reps, missing="повторения не записаны")}'
     if count > 1:
         value += f" — {count} {plural(count, ('подход', 'подхода', 'подходов'))}"
     return value

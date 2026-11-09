@@ -39,7 +39,7 @@ class FakeSession(BaseSession):
             self.edits.append(method)
             # Keep the existing screen assertions independent of send vs edit.
             method = SendMessage(chat_id=method.chat_id, text=method.text,
-                                 reply_markup=method.reply_markup)
+                                 reply_markup=method.reply_markup, parse_mode=method.parse_mode)
         self.requests.append(method)
         if isinstance(method, SendMessage):
             return Message(message_id=len(self.requests), date=datetime.now(timezone.utc),
