@@ -1,5 +1,6 @@
 """Immutable plan snapshot plus transactional, restart-safe training progress."""
 import json
+import hashlib
 
 from database import db
 from database.programs import _read, ProgramAccessError
@@ -23,6 +24,106 @@ def _session(c, user_id, workout_id, revision=None):
 def get_session(user_id, workout_id):
     with db._connection() as c:
         return _session(c, user_id, workout_id)
+
+
+def _can_resume(snapshot, progress, rows):
+    """Refuse an unknown/corrupt step instead of reconstructing it from a plan."""
+    if not isinstance(snapshot, dict) or not isinstance(progress, dict):
+        return False
+    if snapshot.get('version') != 1 or not isinstance(snapshot.get('day_name'), str):
+        return False
+    exercises = snapshot.get('exercises')
+    if not isinstance(exercises, list) or not exercises or any(
+            not isinstance(item, dict) or not isinstance(item.get('name'), str)
+            or not isinstance(item.get('exercise_id'), str) for item in exercises):
+        return False
+    current = progress.get('current')
+    queues = [progress.get(key) for key in ('completed', 'remaining', 'postponed')]
+    if type(current) is not int or any(not isinstance(queue, list) for queue in queues):
+        return False
+    positions = [current, *(position for queue in queues for position in queue)]
+    if any(type(position) is not int for position in positions):
+        return False
+    if sorted(positions) != list(range(len(exercises))):
+        return False
+    completed = set(queues[0])
+    recorded = set()
+    for row in rows:
+        position = row[-1]
+        if position is None or position not in completed:
+            return False
+        if row[2] != exercises[position]['exercise_id']:
+            return False
+        recorded.add(position)
+    return recorded == completed
+
+
+def _unfinished(c, user_id, workout_id):
+    workout = db._workout(c, user_id, workout_id, active=True)
+    session_row = c.execute('''SELECT program_id,day_id,snapshot,progress,revision
+        FROM workout_sessions WHERE workout_id=?''', (workout_id,)).fetchone()
+    rows = c.execute('''SELECT s.id,s.exercise,s.exercise_id,s.set_number,
+        s.is_warmup,s.weight,s.reps,s.created_at,o.exercise_position
+        FROM workout_sets s LEFT JOIN workout_set_occurrences o
+        ON o.set_id=s.id AND o.workout_id=s.workout_id
+        WHERE s.workout_id=? ORDER BY s.id''', (workout_id,)).fetchall()
+    # Include every actual set field and persisted step, not merely a session
+    # revision: old workouts have no revision, and outside writers may edit sets.
+    raw = [user_id, workout, session_row, rows]
+    fingerprint = hashlib.sha256(json.dumps(raw, ensure_ascii=False).encode('utf-8')).hexdigest()
+    snapshot = progress = None
+    if session_row:
+        try:
+            snapshot, progress = json.loads(session_row[2]), json.loads(session_row[3])
+        except (ValueError, TypeError):
+            pass
+    exercises = {}
+    for _, name, external_id, number, warmup, weight, reps, created_at, position in rows:
+        key = ('position', position) if position is not None else ('legacy', external_id, name)
+        group = exercises.setdefault(key, dict(name=name, sets=[]))
+        group['sets'].append((bool(warmup), weight, reps))
+    return dict(workout_id=workout_id, day_name=workout[1], started_at=workout[2],
+                timezone=db._user(c, user_id)['timezone'],
+                program_name=snapshot.get('program_name') if isinstance(snapshot, dict) else None,
+                exercises=list(exercises.values()), set_count=len(rows),
+                exercise_count=len(exercises), fingerprint=fingerprint,
+                can_resume=_can_resume(snapshot, progress, rows),
+                revision=session_row[4] if session_row else None)
+
+
+def get_unfinished_workout(user_id, workout_id):
+    """One consistent SQLite read; legacy rows never borrow the current plan."""
+    with db._connection() as c:
+        c.execute('BEGIN')
+        return _unfinished(c, user_id, workout_id)
+
+
+def get_resume_session(user_id, workout_id):
+    with db._connection() as c:
+        c.execute('BEGIN')
+        if not _unfinished(c, user_id, workout_id)['can_resume']:
+            raise db.WorkoutAccessError('Продолжить эту запись безопасно нельзя. Подходы сохранены в карточке.')
+        return _session(c, user_id, workout_id)
+
+
+def delete_unfinished_workout(user_id, workout_id, expected_fingerprint):
+    """Confirmation applies only to exactly the facts that were displayed."""
+    with db._connection(True) as c:
+        details = _unfinished(c, user_id, workout_id)
+        if details['fingerprint'] != expected_fingerprint:
+            raise db.WorkoutAccessError('Тренировка изменилась. Подтвердите удаление заново.')
+        c.execute('DELETE FROM workout_sets WHERE workout_id=?', (workout_id,))
+        c.execute('DELETE FROM workouts WHERE id=? AND user_id=? AND finished_at IS NULL',
+                  (workout_id, user_id))
+
+
+def finish_unfinished_workout(user_id, workout_id, expected_fingerprint):
+    """Keep recorded facts and complete without inventing unperformed exercises."""
+    with db._connection(True) as c:
+        details = _unfinished(c, user_id, workout_id)
+        if details['fingerprint'] != expected_fingerprint:
+            raise db.WorkoutAccessError('Тренировка изменилась. Откройте её карточку заново.')
+        db._finish_workout(c, user_id, workout_id)
 
 
 def start_day(user_id, day_id=None):

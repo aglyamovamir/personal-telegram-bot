@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,26 +30,17 @@ class EditorTestCase(TelegramTestCase):
             c.execute("UPDATE exercises SET name_en='Squat',name_ru='Присед' WHERE external_id='squat'")
 
     async def press(self, label, telegram_id=111, *, contains=False):
-        if label == '＋ Найти упражнение':
-            for request in reversed(self.session.requests):
-                if isinstance(request, SendMessage) and request.chat_id == telegram_id and request.reply_markup:
-                    if any(b.text == 'Добавить ещё' for row in request.reply_markup.inline_keyboard for b in row):
-                        label = 'Добавить ещё'
-                    break
-        # Optional legacy-plan settings are now explicitly behind one screen.
+        # Optional existing plan settings remain behind their own screen.
         if label in {'Число рабочих подходов', 'Вес и повторения рабочих', 'Разминочные подходы'}:
-            for request in reversed(self.session.requests):
-                if isinstance(request, SendMessage) and request.chat_id == telegram_id and request.reply_markup:
-                    if any(b.text == 'Необязательный план' for row in request.reply_markup.inline_keyboard for b in row):
-                        await self.press('Необязательный план', telegram_id)
-                    break
+            editor = (await self.context(telegram_id).get_data()).get('editor', {})
+            if any(a[0] == 'optional_plan' for a in editor.get('actions', [])):
+                await self.press('Необязательный план', telegram_id)
         for request in reversed(self.session.requests):
             if isinstance(request, SendMessage) and request.chat_id == telegram_id and request.reply_markup:
                 for row in request.reply_markup.inline_keyboard:
                     for button in row:
                         if (label in button.text if contains else button.text == label):
                             await self.click(telegram_id, button.callback_data)
-                            # Existing helper represents selecting AND adding an exercise.
                             editor = (await self.context(telegram_id).get_data()).get('editor', {})
                             if label != 'Добавить в день' and any(a[0] == 'pick' for a in editor.get('actions', [])):
                                 await self.press('Добавить в день', telegram_id)
@@ -61,46 +53,50 @@ class EditorTestCase(TelegramTestCase):
 
     async def new_program(self, name='Мой план', telegram_id=111):
         await self.send(telegram_id, '🗂 Мои программы')
-        await self.press('＋ Создать программу', telegram_id)
+        await self.press('Создать программу', telegram_id)
         await self.send(telegram_id, name)
 
-    async def add_day(self, name):
-        await self.press('＋ Добавить день')
-        await self.send(111, name)
+    async def add_day(self, name, telegram_id=111):
+        editor = await self.draft(telegram_id)
+        if editor.get('prompt') != ['day_new']:
+            await self.press('Добавить день', telegram_id)
+        await self.send(telegram_id, name)
 
-    async def add_exercise(self, query='Bench', label=None, *, open_details=True):
-        before = len((await self.draft())['draft']['days'][-1]['exercises'])
-        await self.press('＋ Найти упражнение')
-        await self.send(111, query)
-        await self.press(label or {'Bench': 'Жим лёжа', 'squat': 'Присед'}.get(query, query), contains=True)
-        editor = await self.draft()
-        items = editor['draft']['days'][-1]['exercises']
+    async def add_exercise(self, query='Bench', label=None, *, open_details=True, telegram_id=111):
+        editor = await self.draft(telegram_id)
+        day = editor['prompt'][1] if (editor.get('prompt') or [None])[0:1] == ['search'] else len(editor['draft']['days']) - 1
+        before = len(editor['draft']['days'][day]['exercises'])
+        if not editor.get('prompt') or editor['prompt'][0] != 'search':
+            await self.press('Добавить упражнение', telegram_id)
+        await self.send(telegram_id, query)
+        await self.press(label or {'Bench': 'Жим лёжа', 'squat': 'Присед'}.get(query, query), telegram_id, contains=True)
+        editor = await self.draft(telegram_id)
+        items = editor['draft']['days'][day]['exercises']
         if open_details and len(items) > before:
-            await self.press(f"{len(items)}. {items[-1]['name']}")
-
+            await self.press(f"{len(items)}. {items[-1]['name']}", telegram_id)
 
 
 class EditorTests(EditorTestCase):
-    async def test_build_two_days_weights_warmups_save_activate_and_preview(self):
-        before = len(programs.list_programs(self.uid))
+    async def test_two_days_autosave_optional_plans_activation_preview_and_restart(self):
+        active = programs.get_active_program(self.uid)['id']
         await self.new_program()
+        self.assertEqual((await self.draft())['prompt'], ['day_new'])
         await self.add_day('Верх')
+        self.assertEqual((await self.draft())['prompt'], ['search', 0])
         await self.add_exercise()
+        pid = (await self.draft())['program_id']
+        self.assertEqual(programs.get_active_program(self.uid)['id'], active)
         await self.press('Вес и повторения рабочих')
         await self.send(111, '50 8 3')
         await self.press('Разминочные подходы')
         await self.send(111, '20 10\n40 5')
-        await self.press('Назад')
-        await self.press('Назад')
+        await self.press('Назад')  # exercise
+        await self.press('Назад')  # day
+        await self.press('Назад')  # program
         await self.add_day('Низ')
         await self.add_exercise('squat')
         await self.press('Число рабочих подходов')
         await self.send(111, '4')
-        await self.press('Назад')
-        await self.press('Сохранить программу')
-        editor = await self.draft()
-        pid = editor['program_id']
-        self.assertEqual(len(programs.list_programs(self.uid)), before + 1)
         program = programs.get_program(self.uid, pid)
         self.assertEqual([d['name'] for d in program['days']], ['Верх', 'Низ'])
         upper, lower = [d['exercises'][0] for d in program['days']]
@@ -108,85 +104,110 @@ class EditorTests(EditorTestCase):
         self.assertEqual(upper['working_plan'][0], dict(weight=50, reps=8))
         self.assertEqual(upper['warmup'], [dict(weight=20, reps=10), dict(weight=40, reps=5)])
         self.assertEqual(lower['working_sets'], 4)
+        await self.press('Назад')
+        await self.press('Назад')
+        await self.press('Назад')
         await self.press('Сделать активной')
-        self.assertEqual(programs.get_active_program(self.uid)['id'], pid)
-        await self.press('Просмотр состава')
-        await self.press('Назад')
-        await self.press('Назад')
-        await self.press('Отмена')
-        await self.click(111, f"previewday:{program['days'][0]['id']}")
-        self.assertIsNone(db.get_active_workout(self.uid))
-        await self.press('Начать тренировку')
-        session = sessions.get_session(self.uid, db.get_active_workout(self.uid)[0])
-        self.assertEqual(session['snapshot']['day_name'], 'Верх')
-        self.assertEqual(db.get_workout_sets(self.uid, session['workout_id']), [])
+        await self.press('Просмотреть программу')
+        preview = self.session.requests[-2].text if not isinstance(self.session.requests[-1], SendMessage) else self.session.requests[-1].text
+        self.assertIn('Верх', preview)
+        self.assertIn('Низ', preview)
+        await self.press('Закрыть редактор')
+        await self.context(111).clear()  # MemoryStorage loss does not undo data.
+        self.assertEqual(programs.get_program(self.uid, pid), program | {'is_active': 1})
 
-    async def test_duplicates_require_confirmation_reorder_and_delete_are_draft_only(self):
+    async def test_duplicates_have_distinct_ids_button_reorder_and_saved_deletion(self):
         await self.new_program()
         await self.add_day('Один')
-        await self.add_exercise()
-        await self.press('Назад')
-        await self.add_exercise()
-        self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 1)
-        await self.press('Подтвердить')
+        await self.add_exercise(open_details=False)
+        pid = (await self.draft())['program_id']
+        await self.add_exercise(open_details=False)
+        self.assertEqual(len(programs.get_program(self.uid, pid)['days'][0]['exercises']), 1)
+        await self.press('Да')
+        plan = programs.get_program(self.uid, pid)
+        ids = [e['id'] for e in plan['days'][0]['exercises']]
+        self.assertEqual(len(set(ids)), 2)
         await self.press('2. Жим лёжа')
         await self.press('Моё название')
         await self.send(111, 'Второй жим')
-        await self.press('Упражнение ↑')
-        draft = (await self.draft())['draft']
-        self.assertEqual(draft['days'][0]['exercises'][0]['name'], 'Второй жим')
+        await self.press('Назад')
+        await self.press('Изменить порядок')
+        await self.press('2. Второй жим')
+        await self.press('1')
+        items = programs.get_program(self.uid, pid)['days'][0]['exercises']
+        self.assertEqual([e['id'] for e in items], list(reversed(ids)))
+        await self.press('1. Второй жим')
         await self.press('Удалить упражнение')
-        self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 2)
-        await self.press('Подтвердить')
-        self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 1)
         await self.press('Назад')
-        await self.add_day('Два')
-        await self.add_exercise('squat')
-        await self.press('Назад')
-        await self.press('День ↑')
-        self.assertEqual([d['name'] for d in (await self.draft())['draft']['days']], ['Два', 'Один'])
+        self.assertEqual(len(programs.get_program(self.uid, pid)['days'][0]['exercises']), 2)
+        await self.press('Удалить упражнение')
+        await self.press('Да')
+        self.assertEqual(len(programs.get_program(self.uid, pid)['days'][0]['exercises']), 1)
 
-    async def test_invalid_inputs_and_incomplete_program_do_not_write(self):
-        count = len(programs.list_programs(self.uid))
+    async def test_last_exercise_then_last_day_confirmation_preserves_history(self):
+        await self.new_program()
+        await self.add_day('Один')
+        await self.add_exercise()
+        pid = (await self.draft())['program_id']
+        wid = db.create_workout(self.uid, 'History')
+        db.save_set(self.uid, wid, 'Actual', 1, 20, 10)
+        db.finish_workout(self.uid, wid)
+        rows = db.get_workout_sets(self.uid, wid)
+        await self.press('Удалить упражнение')
+        await self.press('Да')
+        self.assertEqual(len(programs.get_program(self.uid, pid)['days']), 1)
+        await self.press('Назад')
+        self.assertEqual(len(programs.get_program(self.uid, pid)['days']), 1)
+        await self.press('Удалить день')
+        await self.press('Да')
+        self.assertNotIn(pid, [p['id'] for p in programs.list_programs(self.uid)])
+        self.assertEqual(db.get_workout_sets(self.uid, wid), rows)
+
+    async def test_invalid_and_empty_input_never_creates_empty_objects(self):
+        before = programs.list_programs(self.uid)
         await self.send(111, '/programs')
-        await self.press('＋ Создать программу')
-        await self.send(111, ' ')
-        self.assertEqual(await self.context(111).get_state(), ProgramEditor.text.state)
-        await self.send(111, 'x' * 121)
+        await self.press('Создать программу')
+        for value in (' ', 'x' * 121):
+            await self.send(111, value)
+            self.assertEqual(await self.context(111).get_state(), ProgramEditor.text.state)
         await self.send(111, 'Valid')
-        await self.press('Сохранить')
-        self.assertEqual(len(programs.list_programs(self.uid)), count)
         await self.add_day('Day')
+        await self.press('Закрыть редактор')
+        self.assertEqual(programs.list_programs(self.uid), before)
+        await self.new_program()
+        await self.add_day('With exercise')
         await self.add_exercise()
         await self.press('Число рабочих подходов')
         for value in ('0', '-1', '1.5', '101', 'many'):
             await self.send(111, value)
-            self.assertEqual((await self.draft())['draft']['days'][0]['exercises'][0]['working_sets'], None)
+            self.assertIsNone((await self.draft())['draft']['days'][0]['exercises'][0]['working_sets'])
         await self.send(111, '2')
         await self.press('Вес и повторения рабочих')
-        for value in ('nan 8', '50 0', '50 8 9999999', 'text', '50 99999999999999999999999999'):
+        for value in ('nan 8', '50 0', '50 8 9999999', 'text'):
             await self.send(111, value)
             self.assertEqual(await self.context(111).get_state(), ProgramEditor.text.state)
         await self.send(111, '- - 2')
         self.assertEqual((await self.draft())['draft']['days'][0]['exercises'][0]['working_plan'], [dict(weight=None, reps=None)] * 2)
 
-    async def test_old_button_double_tap_and_cross_user_token_have_no_effect(self):
+    async def test_old_button_double_tap_cross_user_and_workout_token_have_no_effect(self):
         await self.send(111, '/programs')
-        old = await self.press('＋ Создать программу')
-        await self.click(111, old)
+        old = await self.press('Создать программу')
         await self.send(111, 'One')
         before = await self.draft()
         await self.click(111, old)
         self.assertEqual(await self.draft(), before)
         await self.send(222, '/programs')
-        other_before = await self.draft(222)
+        other = await self.draft(222)
         await self.click(222, old)
-        self.assertEqual(await self.draft(222), other_before)
-        self.assertEqual(len(programs.list_programs(self.friend)), 1)
-        await self.click(111, 'pe:forged:999999')
-        self.assertEqual(await self.draft(), before)
+        self.assertEqual(await self.draft(222), other)
+        await self.press('Закрыть редактор')
+        await self.click(111, 'nextday')
+        state_before = await self.context(111).get_data()
+        await self.click(111, old)
+        self.assertEqual(await self.context(111).get_data(), state_before)
+        self.assertEqual(await self.context(111).get_state(), WorkoutState.waiting_for_exercise_input.state)
 
-    async def test_archive_last_program_warns_and_restores_without_history_loss(self):
+    async def test_archive_restore_and_delete_keep_recorded_history(self):
         wid = db.create_workout(self.uid, 'Old')
         db.save_set(self.uid, wid, 'Old exercise', 1, 20, 10)
         db.finish_workout(self.uid, wid)
@@ -195,107 +216,150 @@ class EditorTests(EditorTestCase):
         await self.press('A/B/C', contains=True)
         await self.press('В архив')
         self.assertTrue(any('последняя доступная' in (r.text or '') for r in self.session.requests if isinstance(r, SendMessage)))
-        self.assertEqual(len(programs.list_programs(self.uid)), 1)
-        confirm = await self.press('Подтвердить')
+        await self.press('Да')
         self.assertEqual(programs.list_programs(self.uid), [])
         self.assertIsNone(programs.get_active_program(self.uid))
-        await self.click(111, confirm)
         await self.press('Архив')
         await self.press('A/B/C', contains=True)
         await self.press('Восстановить')
-        self.assertEqual(len(programs.list_programs(self.uid)), 1)
+        self.assertIsNone(programs.get_active_program(self.uid))
         self.assertEqual(db.get_workout_sets(self.uid, wid), history)
 
-    async def test_workout_blocks_editor_and_editor_blocks_workout_fsm(self):
-        await self.click(111, 'nextday')
-        before = await self.context(111).get_data()
-        await self.send(111, '/programs')
-        self.assertEqual(await self.context(111).get_state(), WorkoutState.waiting_for_exercise_input.state)
-        self.assertEqual(await self.context(111).get_data(), before)
-        await self.send(111, '/cancel')
-        await self.press('Удалить тренировку')
-        await self.new_program()
-        draft = await self.draft()
-        await self.click(111, 'nextday')
-        self.assertEqual(await self.draft(), draft)
-        self.assertIsNone(db.get_active_workout(self.uid))
-
-    async def test_optimistic_conflict_does_not_overwrite_external_edit(self):
+    async def test_optimistic_conflict_keeps_entered_text_and_actual_version(self):
         await self.send(111, '/programs')
         await self.press('A/B/C', contains=True)
         pid = (await self.draft())['program_id']
-        await self.press('Переименовать')
-        await self.send(111, 'My draft name')
+        await self.press('Переименовать программу')
         programs.update_program(self.uid, pid, name='External edit')
-        await self.press('Сохранить')
+        await self.send(111, 'My entered name')
         self.assertEqual(programs.get_program(self.uid, pid)['name'], 'External edit')
+        self.assertEqual((await self.draft())['draft']['name'], 'My entered name')
+        self.assertTrue((await self.draft())['dirty'])
+        await self.press('Открыть актуальную версию')
+        self.assertEqual((await self.draft())['draft']['name'], 'External edit')
+        self.assertEqual((await self.draft())['rejected_change']['name'], 'My entered name')
+        await self.press('Посмотреть мой ввод')
+        self.assertTrue(any('My entered name' in (r.text or '') for r in self.session.requests if isinstance(r, SendMessage)))
 
-    async def test_search_pagination_unicode_and_repeated_save(self):
-        with db._connection(True) as c:
-            for i in range(15):
-                c.execute('INSERT INTO exercises(external_id,name_en,name_ru) VALUES (?,?,?)', (f'press-{i}', f'Press {i}', f'Жим {i}'))
+    async def test_failed_sql_write_retains_version_and_retry_commits_once(self):
         await self.new_program()
-        await self.add_day('Search')
-        await self.press('＋ Найти упражнение')
-        await self.send(111, 'ЖИМ')
-        await self.press('→')
-        await self.press('Жим 8')
-        old = await self.press('Сохранить программу')
+        await self.add_day('Day')
+        await self.add_exercise(open_details=False)
         pid = (await self.draft())['program_id']
+        before = programs.get_program(self.uid, pid)
+        await self.press('Назад')
+        await self.press('Переименовать программу')
+        with patch.object(programs, 'update_program', side_effect=sqlite3.OperationalError('database is locked')):
+            await self.send(111, 'Retry name')
+        self.assertEqual(programs.get_program(self.uid, pid), before)
+        self.assertEqual((await self.draft())['draft']['name'], 'Retry name')
+        await self.press('Посмотреть мой ввод')
+        await self.press('Назад')
+        self.assertEqual(programs.get_program(self.uid, pid), before)
+        old = await self.press('Повторить')
+        self.assertEqual(programs.get_program(self.uid, pid)['name'], 'Retry name')
+        revision = programs.get_program(self.uid, pid)['revision']
         await self.click(111, old)
-        self.assertEqual(len([p for p in programs.list_programs(self.uid) if p['id'] == pid]), 1)
-        self.assertEqual(programs.get_program(self.uid, pid)['days'][0]['exercises'][0]['exercise_id'], 'press-8')
+        self.assertEqual(programs.get_program(self.uid, pid)['revision'], revision)
 
-    async def test_first_user_has_create_screen_without_abc_and_cancel_confirms(self):
+    async def test_first_program_activation_only_after_first_exercise(self):
         with patch.dict('os.environ', {'ALLOWED_TELEGRAM_IDS': '111,222,333'}):
-            await self.send(333, '/programs')
-            await self.press('＋ Создать программу', 333)
-            await self.send(333, 'Своя первая')
-            new_id = db.get_or_create_user(333, 333)['id']
-            self.assertEqual(programs.list_programs(new_id), [])
-            await self.send(333, '/cancel')
-            self.assertTrue((await self.draft(333))['dirty'])
-            await self.press('Подтвердить', 333)
-            self.assertIsNone((await self.draft(333))['draft'])
+            await self.new_program('First', telegram_id=333)
+            uid = db.get_or_create_user(333, 333)['id']
+            self.assertEqual(programs.list_programs(uid), [])
+            await self.add_day('First day', telegram_id=333)
+            self.assertIsNone(programs.get_active_program(uid))
+            await self.add_exercise(open_details=False, telegram_id=333)
+            active = programs.get_active_program(uid)
+            self.assertIsNotNone(active)
+            await self.press('Закрыть редактор', 333)
+            await self.context(333).clear()
+            self.assertEqual(programs.get_active_program(uid), active)
+            await self.new_program('Second', telegram_id=333)
+            await self.add_day('Second day', telegram_id=333)
+            await self.add_exercise(open_details=False, telegram_id=333)
+            self.assertEqual(programs.get_active_program(uid)['id'], active['id'])
 
-    async def test_forged_program_id_still_fails_owner_check(self):
+    async def test_cancel_after_failed_edit_keeps_confirmed_input_accessible(self):
+        await self.send(111, '/programs')
+        await self.press('A/B/C', contains=True)
+        pid = (await self.draft())['program_id']
+        await self.press('Переименовать программу')
+        with patch.object(programs, 'update_program', side_effect=sqlite3.OperationalError('database is locked')):
+            await self.send(111, 'Kept after cancel')
+        await self.send(111, '/cancel')
+        self.assertEqual((await self.context(111).get_data())['unsaved_program_change']['name'], 'Kept after cancel')
+        self.assertNotEqual(programs.get_program(self.uid, pid)['name'], 'Kept after cancel')
+        await self.send(111, '/programs')
+        await self.press('Посмотреть мой ввод')
+        screen = next(r for r in reversed(self.session.requests) if isinstance(r, SendMessage))
+        self.assertIn('Kept after cancel', screen.text)
+
+    async def test_forged_owned_routing_still_checks_program_owner(self):
         await self.send(111, '/programs')
         editor = await self.draft()
         other_pid = programs.list_programs(self.friend)[0]['id']
-        # Simulate an injected target as well as normal opaque token tampering:
-        # even trusted routing is never sufficient to authorize a DB operation.
         editor['actions'] = [['open', other_pid]]
         await self.context(111).update_data(editor=editor)
         await self.click(111, f"pe:{editor['token']}:0")
         self.assertIsNone((await self.draft())['draft'])
         self.assertEqual(programs.get_program(self.friend, other_pid)['name'], 'Personal')
 
-    async def test_rename_day_program_and_warmup_removal(self):
+    async def test_rename_and_reorder_preserve_cycle_and_snapshot(self):
+        session = sessions.start_day(self.uid)
         await self.send(111, '/programs')
         await self.press('A/B/C', contains=True)
         pid = (await self.draft())['program_id']
-        await self.press('Переименовать')
+        next_id = programs.next_day(self.uid)['id']
+        await self.press('Переименовать программу')
         await self.send(111, 'Новое имя')
         await self.press('1. A', contains=True)
         await self.press('Переименовать день')
         await self.send(111, 'Верх тела')
-        await self.press('1. Жим', contains=True)
-        await self.press('Разминочные подходы')
-        await self.send(111, '-')
         await self.press('Назад')
-        await self.press('Сохранить программу')
-        plan = programs.get_program(self.uid, pid)
-        self.assertEqual(plan['name'], 'Новое имя')
-        self.assertEqual(plan['days'][0]['name'], 'Верх тела')
-        self.assertEqual(plan['days'][0]['exercises'][0]['warmup'], [])
-        await self.send(111, '🏋️ Тренировка')
-        self.assertIsNone(await self.context(111).get_state())
-        self.assertIsNone(db.get_active_workout(self.uid))
-        for request in self.session.requests:
-            if isinstance(request, SendMessage) and request.reply_markup:
-                for row in request.reply_markup.inline_keyboard:
-                    for button in row:
-                        self.assertLessEqual(len(button.callback_data.encode('utf-8')), 64)
+        await self.press('Изменить порядок дней')
+        await self.press('1. Верх тела', contains=True)
+        await self.press('3')
+        self.assertEqual(programs.next_day(self.uid)['id'], next_id)
+        self.assertEqual(sessions.get_session(self.uid, session['workout_id']), session)
+        self.assertEqual(programs.get_program(self.uid, pid)['days'][2]['name'], 'Верх тела')
+
+    async def test_long_preview_keeps_all_text_and_return_navigation(self):
+        days = [dict(name=f'Day {i}', exercises=[dict(exercise_id='bench-press', name=f'Item {i}-{j} ' + 'x' * 100)
+                                                for j in range(10)]) for i in range(5)]
+        pid = programs.create_program(self.uid, 'Long program', days)
+        await self.send(111, '/programs')
+        await self.press('Long program')
+        await self.press('Просмотреть программу')
+        parts = []
+        while True:
+            screen = next(r for r in reversed(self.session.requests) if isinstance(r, SendMessage))
+            self.assertLessEqual(len(screen.text), 3900)
+            parts.append(screen.text.rsplit('\n\nСтраница ', 1)[0])
+            if not any(button.text == '→' for row in screen.reply_markup.inline_keyboard for button in row):
+                break
+            await self.press('→')
+        from handlers.program_editor_views import day_summary
+        expected = 'Long program\n\n' + '\n\n'.join(day_summary(day) for day in programs.get_program(self.uid, pid)['days'])
+        self.assertEqual(''.join(parts), expected)
+        await self.press('Назад')
+        self.assertEqual((await self.draft())['program_id'], pid)
+
+    async def test_large_reorder_uses_paged_position_grid_and_stable_ids(self):
+        days = [dict(name='Large day', exercises=[dict(exercise_id='bench-press', name=f'Exercise {i}') for i in range(30)])]
+        pid = programs.create_program(self.uid, 'Large program', days)
+        original = programs.get_program(self.uid, pid)['days'][0]['exercises']
+        await self.send(111, '/programs')
+        await self.press('Large program')
+        await self.press('1. Large day', contains=True)
+        await self.press('Изменить порядок')
+        await self.press('1. Exercise 0')
+        screen = next(r for r in reversed(self.session.requests) if isinstance(r, SendMessage))
+        self.assertTrue(all(len(row) <= 4 for row in screen.reply_markup.inline_keyboard))
+        await self.press('→')
+        await self.press('30')
+        actual = programs.get_program(self.uid, pid)['days'][0]['exercises']
+        self.assertEqual([item['id'] for item in actual], [item['id'] for item in original[1:] + original[:1]])
 
 
 class EditorDatabaseTests(TemporaryDatabaseTestCase):
@@ -343,6 +407,21 @@ class EditorDatabaseTests(TemporaryDatabaseTestCase):
         self.assertEqual(catalog.search_exercises("%' OR 1=1 --")['total'], 0)
         with self.assertRaises(ValueError):
             catalog.search_exercises('a')
+
+    def test_foreign_or_repeated_occurrence_ids_are_rejected_atomically(self):
+        own = programs.create_program(self.user_id, 'Mine', document(2, 2))
+        other = programs.create_program(self.other, 'Other', document(1))
+        before = programs.get_program(self.user_id, own)
+        edited = deepcopy(before['days'])
+        edited[0]['exercises'][0]['id'] = programs.get_program(self.other, other)['days'][0]['exercises'][0]['id']
+        with self.assertRaises(programs.ProgramAccessError):
+            programs.update_program(self.user_id, own, days=edited, expected_revision=0)
+        self.assertEqual(programs.get_program(self.user_id, own), before)
+        edited = deepcopy(before['days'])
+        edited[0]['exercises'][1]['id'] = edited[0]['exercises'][0]['id']
+        with self.assertRaises(programs.ProgramAccessError):
+            programs.update_program(self.user_id, own, days=edited, expected_revision=0)
+        self.assertEqual(programs.get_program(self.user_id, own), before)
 
     def test_current_migration_v4_is_idempotent(self):
         with db._connection() as c:

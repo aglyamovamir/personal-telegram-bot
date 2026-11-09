@@ -1,10 +1,12 @@
 """Search/card UX using temporary databases and fake Telegram transport."""
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
-from aiogram.methods import SendMessage, SendPhoto
+from aiogram.methods import SendMessage, SendPhoto, DeleteMessage
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Message, Chat, User
 
 from database import db, catalog
 from test_editor import EditorTestCase
@@ -36,7 +38,6 @@ class CatalogUXTests(EditorTestCase):
     async def prepare_search(self, query='Bench'):
         await self.new_program('Test')
         await self.add_day('Day')
-        await self.press('＋ Найти упражнение')
         await self.send(111, query)
 
     def test_synonyms_normalization_typos_and_ranking(self):
@@ -81,7 +82,7 @@ class CatalogUXTests(EditorTestCase):
         await self.raw_press('Добавить в день')
         self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 1)
         self.assertTrue(self.session.edits)
-        await self.raw_press('Добавить ещё')
+        await self.raw_press('Добавить упражнение')
         self.assertEqual((await self.draft())['draft']['days'][0]['exercises'][0]['exercise_id'], 'bench-press')
 
     async def test_image_request_failure_and_pagination_preserve_draft(self):
@@ -96,9 +97,8 @@ class CatalogUXTests(EditorTestCase):
         before = deepcopy((await self.draft())['draft'])
         with patch('database.catalog.image_source', return_value='https://example.org/exercise.jpg'):
             await self.raw_press('Жим страница', contains=True)
-            self.assertFalse(any(isinstance(r, SendPhoto) for r in self.session.requests))
-            await self.raw_press('Показать изображение')
             self.assertTrue(any(isinstance(r, SendPhoto) for r in self.session.requests))
+            await self.raw_press('Назад к результатам')
             original = self.session.make_request
 
             async def fail_photo(bot, method, timeout=None):
@@ -107,7 +107,7 @@ class CatalogUXTests(EditorTestCase):
                 return await original(bot, method, timeout)
 
             with patch.object(self.session, 'make_request', side_effect=fail_photo):
-                await self.raw_press('Показать изображение')
+                await self.raw_press('Жим страница', contains=True)
             self.assertEqual((await self.draft())['draft'], before)
             self.assertTrue(any('сейчас недоступно' in r.text for r in self.session.requests if isinstance(r, SendMessage)))
             await self.raw_press('Назад к результатам')
@@ -127,6 +127,46 @@ class CatalogUXTests(EditorTestCase):
         self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 1)
         await self.click(111, forged)
         self.assertEqual(len((await self.draft())['draft']['days'][0]['exercises']), 1)
+
+    async def test_repeated_queries_work_directly_for_empty_and_nonempty_results(self):
+        await self.prepare_search('zzzznothing')
+        text = next(r.text for r in reversed(self.session.requests) if isinstance(r, SendMessage))
+        self.assertIn('ничего не найдено', text)
+        self.assertIn('Введите другое название', text)
+        await self.send(111, 'Bench')
+        self.assertIn('bench-press', (await self.draft())['search_ids'])
+        await self.send(111, 'бицепс со штангой')
+        self.assertIn('barbell-curl', (await self.draft())['search_ids'])
+
+    async def test_two_images_are_shown_in_order_and_only_bot_media_is_removed(self):
+        await self.prepare_search()
+        item = catalog.get_exercise('bench-press')
+        item['images'] = [dict(source='https://example.org/start.jpg', caption='Исходное положение'),
+                          dict(source='https://example.org/end.jpg', caption='Конечное положение')]
+        item['image'] = item['images'][0]['source']
+        original = self.session.make_request
+        sent_ids = []
+
+        async def media_transport(bot, method, timeout=None):
+            if isinstance(method, SendPhoto):
+                self.session.requests.append(method)
+                sent_ids.append(7000 + len(sent_ids) + 1)
+                return Message(message_id=sent_ids[-1], date=datetime.now(timezone.utc),
+                               chat=Chat(id=111, type='private'),
+                               from_user=User(id=bot.id, is_bot=True, first_name='Bot'))
+            return await original(bot, method, timeout)
+
+        with patch('database.catalog.get_exercise', return_value=item), patch.object(self.session, 'make_request', side_effect=media_transport):
+            await self.raw_press('Жим лёжа', contains=True)
+            photos = [request for request in self.session.requests if isinstance(request, SendPhoto)]
+            self.assertEqual([request.caption for request in photos], ['Исходное положение', 'Конечное положение'])
+            await self.raw_press('Назад к результатам')
+            deleted = [request.message_id for request in self.session.requests if isinstance(request, DeleteMessage)]
+            self.assertEqual(deleted, [7001, 7002])
+            await self.raw_press('Жим лёжа', contains=True)
+            await self.raw_press('Закрыть редактор')
+            deleted = [request.message_id for request in self.session.requests if isinstance(request, DeleteMessage)]
+            self.assertEqual(deleted, sent_ids)
 
     def test_optional_image_url_and_related_local_file_fallback(self):
         with TemporaryDirectory() as directory:

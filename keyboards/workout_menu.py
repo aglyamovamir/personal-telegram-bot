@@ -2,15 +2,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def workout_menu(programs, active, program_page=0, day_page=0):
-    program_page = max(0, min(program_page, max(0, (len(programs) - 1) // 8)))
     days = active['days'] if active else []
     day_page = max(0, min(day_page, max(0, (len(days) - 1) // 12)))
-    rows = [[InlineKeyboardButton(text=p['name'], callback_data=f"program:{p['id']}")]
-            for p in programs[program_page * 8:(program_page + 1) * 8]]
-    if program_page:
-        rows.append([InlineKeyboardButton(text='← Программы', callback_data=f'trainingpage:{program_page - 1}:{day_page}')])
-    if (program_page + 1) * 8 < len(programs):
-        rows.append([InlineKeyboardButton(text='Программы →', callback_data=f'trainingpage:{program_page + 1}:{day_page}')])
+    rows = []
     if active:
         rows.append([InlineKeyboardButton(text="Следующий день по порядку", callback_data='previewnext')])
         rows.extend([[InlineKeyboardButton(text=d['name'], callback_data=f"previewday:{d['id']}")]
@@ -19,6 +13,10 @@ def workout_menu(programs, active, program_page=0, day_page=0):
             rows.append([InlineKeyboardButton(text='← Дни', callback_data=f'trainingpage:{program_page}:{day_page - 1}')])
         if (day_page + 1) * 12 < len(days):
             rows.append([InlineKeyboardButton(text='Дни →', callback_data=f'trainingpage:{program_page}:{day_page + 1}')])
+        rows.append([InlineKeyboardButton(text='Редактировать программу', callback_data='editactive')])
+    else:
+        rows.append([InlineKeyboardButton(text='Создать программу', callback_data='trainingnew')])
+    rows.append([InlineKeyboardButton(text='Список программ', callback_data='trainingprograms')])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -41,6 +39,6 @@ def correction_controls(token):
 
 def cancel_workout_controls(token):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='Удалить тренировку', callback_data=f'deleteworkout:{token}')],
-        [InlineKeyboardButton(text='Вернуться к тренировке', callback_data=f'keepworkout:{token}')],
+        [InlineKeyboardButton(text='Да, удалить', callback_data=f'deleteworkout:{token}')],
+        [InlineKeyboardButton(text='Назад', callback_data=f'keepworkout:{token}')],
     ])

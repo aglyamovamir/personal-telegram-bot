@@ -4,56 +4,37 @@ import sqlite3
 import unicodedata
 import ipaddress
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 from database import db
+from database.catalog_localization import ALIASES, RUSSIAN_NAMES
 
-# Search vocabulary only. Every selectable result must exist in SQLite.
-VOCABULARY = (
-    ('bench press', 'жим лёжа', ('жим лежа', 'жим от груди')),
-    ('lateral raise', 'разведения в стороны', ('махи в стороны', 'подъемы в стороны')),
-    ('curl', 'сгибание рук', ('бицепс', 'подъем на бицепс')),
-    ('dips', 'отжимания на брусьях', ('брусья',)),
-    ('pull ups', 'подтягивания', ('подтягивание',)),
-    ('pull up', 'подтягивания', ('подтягивание',)),
-    ('push ups', 'отжимания', ('отжимание',)),
-    ('push up', 'отжимания', ('отжимание',)),
-    ('deadlift', 'становая тяга', ('становая',)),
-    ('squat', 'приседания', ('присед', 'приседание')),
-    ('row', 'тяга', ('тяга в наклоне',)),
-    ('overhead press', 'жим над головой', ('армейский жим', 'жим стоя')),
-    ('shoulder press', 'жим на плечи', ('жим сидя',)),
-    ('leg press', 'жим ногами', ()),
-    ('leg extension', 'разгибание ног', ()),
-    ('leg curl', 'сгибание ног', ()),
-    ('calf raise', 'подъём на носки', ('икры',)),
-    ('pulldown', 'тяга верхнего блока', ('вертикальная тяга',)),
-    ('plank', 'планка', ()),
-    ('crunch', 'скручивания', ('пресс',)),
-    ('lunge', 'выпады', ()),
-    ('hip thrust', 'ягодичный мост', ()),
-    ('glute bridge', 'ягодичный мост', ()),
-    ('back extension', 'гиперэкстензия', ()),
-    ('fly', 'разведения', ('разводка',)),
-    ('triceps extension', 'разгибание на трицепс', ('трицепс',)),
-)
-WORDS = {
-    'barbell': 'со штангой', 'dumbbell': 'с гантелями', 'db': 'с гантелями',
-    'cable': 'в блоке', 'machine': 'в тренажёре', 'assisted': 'с поддержкой',
-    'bench': 'от скамьи', 'incline': 'наклонный', 'decline': 'с наклоном вниз',
-    'seated': 'сидя', 'standing': 'стоя', 'single': 'одной', 'arm': 'рукой',
-    'leg': 'ногой', 'close': 'узкий', 'grip': 'хват', 'wide': 'широкий',
-    'reverse': 'обратный', 'hammer': 'молотковое', 'romanian': 'румынская',
-    'bodyweight': 'с собственным весом', 'band': 'с резинкой', 'banded': 'с резинкой',
-    'lying': 'лёжа', 'rear': 'задний', 'front': 'передний', 'raise': 'подъём',
+
+# These equivalents affect search only. Meaningful qualifiers stay mandatory:
+# a query for weighted dips must never be satisfied by ordinary/assisted dips.
+SEARCH_PHRASES = {
+    'с дополнительным весом': 'weighted',
+    'с дополнительным отягощением': 'weighted',
+    'с отягощением': 'weighted',
+    'с весом': 'weighted',
+    'с собственным весом': 'bodyweight',
+    'собственный вес': 'bodyweight',
+    'брусьях': 'брусья',
+    'гантелями': 'dumbbell', 'гантелей': 'dumbbell',
+    'гантелью': 'dumbbell', 'гантель': 'dumbbell', 'гантели': 'dumbbell',
+    'штангой': 'barbell', 'штанги': 'barbell', 'штанга': 'barbell',
+    'гирями': 'kettlebell', 'гирей': 'kettlebell', 'гири': 'kettlebell',
+    'гирю': 'kettlebell', 'гиря': 'kettlebell',
+    'бицепса': 'бицепс', 'трицепса': 'трицепс',
+    'разводка': 'разведение', 'разведения': 'разведение',
+    'сгибания': 'сгибание', 'подъемы': 'подъем',
+    'резинкой': 'резиновой петлей',
+    'dumbbells': 'dumbbell', 'kettlebells': 'kettlebell',
+    'pull ups': 'pull up', 'push ups': 'push up',
 }
-COMMON = {
-    'bench-press': ('Жим штанги лёжа', ('жим лежа', 'жим штанги лежа')),
-    'barbell-curl': ('Подъём штанги на бицепс', ('бицепс со штангой', 'сгибание рук со штангой')),
-    'bench-dips': ('Обратные отжимания от скамьи', ('отжимания от скамьи',)),
-    'dips': ('Отжимания на брусьях', ('брусья',)),
-    'lateral-raise': ('Разведения гантелей в стороны', ('разведения в стороны', 'махи в стороны')),
-}
+STOP_WORDS = frozenset(('с', 'со', 's', 'на', 'в', 'во', 'от', 'для', 'и',
+                        'the', 'with', 'on', 'a', 'an', 'to', 'of'))
 LABELS = {
     'barbell': 'Штанга', 'dumbbell': 'Гантели', 'cable': 'Блок',
     'dip_machine': 'Тренажёр для брусьев', 'bodyweight': 'Собственный вес',
@@ -104,45 +85,55 @@ def normalize(text):
     return ' '.join(re.findall(r'[^\W_]+', unicodedata.normalize('NFKC', text or '').casefold().replace('ё', 'е')))
 
 
+def russian_name(value):
+    """Accept complete Cyrillic names, never corrupted or mixed-word output."""
+    value = (value or '').strip()
+    return bool(value and re.search('[а-яёА-ЯЁ]', value)
+                and not re.search('[a-zA-Z\ufffd]', value))
+
+
 def names(external, ru, en):
-    normalized = normalize(en)
-    aliases = []
-    translated = normalized
-    for phrase, russian, alternatives in VOCABULARY:
-        if phrase == 'curl' and ('leg' in normalized or 'hamstring' in normalized):
-            continue
-        if phrase == 'dips' and ('bench' in normalized or 'crab' in normalized):
-            continue
-        pattern = r'(?<!\w)' + re.escape(phrase) + r's?(?!\w)'
-        if re.search(pattern, normalized):
-            aliases.extend((russian, *alternatives))
-            translated = re.sub(pattern, russian, translated)
-    translated = ' '.join(WORDS.get(word, word) for word in translated.split())
-    preferred, extra = COMMON.get(external, (None, ()))
-    display = (ru or '').strip() or preferred or (translated.capitalize() if translated != normalized else en)
-    return display, [display, en, translated, *aliases, *extra]
+    display = ru.strip() if russian_name(ru) else RUSSIAN_NAMES.get(external, en)
+    # Keep the complete dictionary name searchable even when an administrator
+    # supplied a different valid Russian name in the shared catalog.
+    candidates = [display, en, RUSSIAN_NAMES.get(external, ''), *ALIASES.get(external, ())]
+    return display, candidates
+
+
+@lru_cache(maxsize=8192)
+def search_tokens(value):
+    value = normalize(value)
+    for phrase, replacement in SEARCH_PHRASES.items():
+        value = re.sub(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', replacement, value)
+    return tuple(word for word in value.split() if word not in STOP_WORDS)
 
 
 def score(query, candidates, exact_aliases=()):
+    query = normalize(query)
+    tokens = search_tokens(query)
+    if not tokens:
+        return None
     best = None
     for index, candidate in enumerate(candidates):
         text = normalize(candidate)
+        if not text:
+            continue
+        words = search_tokens(text)
         if query == text:
             explicit = query in {normalize(alias) for alias in exact_aliases}
             rank = (0, 0) if index < 2 else (1, 0 if explicit else len(normalize(candidates[0])))
         elif text.startswith(query):
             rank = (2, len(text) - len(query))
-        elif all(any(word.startswith(token) for word in text.split()) for token in query.split()):
-            rank = (3, len(text))
+        elif all(any(word.startswith(token) for word in words) for token in tokens):
+            rank = (3, len(words) - len(tokens), len(text))
         elif query in text:
             rank = (4, len(text))
         else:
-            tokens = query.split()
-            similarities = [max((SequenceMatcher(None, token, w).ratio() for w in text.split()), default=0) for token in tokens]
+            similarities = [max((SequenceMatcher(None, token, word).ratio() for word in words), default=0) for token in tokens]
             similarity = sum(similarities) / len(tokens)
             if len(query) < 4 or min(similarities) < .65 or similarity < .78:
                 continue
-            rank = (5, -similarity)
+            rank = (5, -similarity, len(words))
         if best is None or rank < best:
             best = rank
     return best
@@ -152,14 +143,14 @@ def search_exercises(query, page=0, page_size=8):
     query = normalize(query)
     if not 2 <= len(query) <= 100:
         raise ValueError('Введите от 2 до 100 символов названия')
-    if type(page) is not int or page < 0 or not 1 <= page_size <= 20:
+    if type(page) is not int or page < 0 or type(page_size) is not int or not 1 <= page_size <= 20:
         raise ValueError('Неверная страница поиска')
     with db._connection() as c:
         rows = c.execute('SELECT external_id,name_ru,name_en FROM exercises ORDER BY id').fetchall()
     matches = []
     for external, ru, en in rows:
         display, candidates = names(external, ru, en)
-        rank = score(query, candidates, COMMON.get(external, (None, ()))[1])
+        rank = score(query, candidates, ALIASES.get(external, ()))
         if rank is not None:
             matches.append((rank, normalize(display), dict(exercise_id=external, name=display, name_en=en)))
     matches.sort(key=lambda row: (row[0], row[1], row[2]['exercise_id']))
@@ -208,9 +199,37 @@ def get_exercise(external):
             raise ValueError('Упражнение больше недоступно. Повторите поиск.')
         data = dict(row)
         muscles = c.execute("SELECT muscle FROM exercise_muscles WHERE exercise_id=? AND muscle_type='primary' ORDER BY muscle", (data['id'],)).fetchall()
-        paths = c.execute('SELECT path FROM exercise_images WHERE exercise_id=? ORDER BY id', (data['id'],)).fetchall()
+        paths = c.execute('SELECT view,path FROM exercise_images WHERE exercise_id=? ORDER BY id', (data['id'],)).fetchall()
     data['name'], _ = names(external, data.get('name_ru'), data['name_en'])
     data['muscles'] = [LABELS.get(r[0], r[0].replace('_', ' ')) for r in muscles[:5]]
     data['equipment_label'] = LABELS.get(data.get('equipment'), data.get('equipment') or 'Не указано')
-    data['image'] = next((source for value in [data.get('image_url'), *(r[0] for r in paths)] if (source := image_source(value)) is not None), None)
+    data['has_russian_name'] = russian_name(data['name'])
+    data['images'] = exercise_images(paths, data.get('image_url'))
+    data['image'] = data['images'][0]['source'] if data['images'] else None
     return data
+
+
+def exercise_images(paths, image_url=None):
+    """Return at most two distinct existing references, with truthful phase labels.
+
+    Related ``start``/``peak`` images take precedence over the legacy main image;
+    ``peak`` is not an end position. Unknown views receive neutral captions.
+    Transport failures are handled by the UI so the text card remains usable.
+    """
+    views = {'start': (0, 'Исходное положение'),
+             'peak': (1, 'Пиковая фаза'),
+             'end': (2, 'Конечное положение'),
+             'main': (3, 'Изображение упражнения')}
+    candidates = sorted(paths, key=lambda row: views.get(row[0], (4, ''))[0])
+    candidates.append(('main', image_url))
+    images, seen = [], set()
+    for view, value in candidates:
+        source = image_source(value)
+        if source is None or str(source) in seen:
+            continue
+        seen.add(str(source))
+        images.append(dict(source=source, view=view,
+                           caption=views.get(view, (4, 'Изображение упражнения'))[1]))
+        if len(images) == 2:
+            break
+    return images

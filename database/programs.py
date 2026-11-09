@@ -49,13 +49,20 @@ def _write_days(c, program_id, days, *, existing_ids=()):
             day_id = day['id']
             c.execute('UPDATE program_days SET name=?,position=? WHERE id=? AND program_id=?',
                       (_name(day['name']), position, day_id, program_id))
-            c.execute('DELETE FROM program_day_exercises WHERE day_id=?', (day_id,))
         else:
             day_id = c.execute('INSERT INTO program_days(program_id,name,position) VALUES (?,?,?)',
                                (program_id, _name(day['name']), position)).lastrowid
         items = day['exercises']
         if not isinstance(items, list) or not items:
             raise ValueError('В дне нужно хотя бы одно упражнение')
+        old_exercises = dict(c.execute('SELECT id,exercise_id FROM program_day_exercises WHERE day_id=?', (day_id,)))
+        requested = [item['id'] for item in items if item.get('id') is not None]
+        if len(set(requested)) != len(requested) or not set(requested) <= set(old_exercises):
+            raise ProgramAccessError('Включение упражнения не принадлежит дню или повторяется.')
+        offset = c.execute('SELECT COALESCE(MAX(position),0) FROM program_day_exercises WHERE day_id=?', (day_id,)).fetchone()[0] + len(items) + 1
+        c.execute('UPDATE program_day_exercises SET position=position+? WHERE day_id=?', (offset, day_id))
+        for eid in set(old_exercises) - set(requested):
+            c.execute('DELETE FROM program_day_exercises WHERE id=? AND day_id=?', (eid, day_id))
         for order, exercise in enumerate(items):
             catalog = c.execute('SELECT id,name_ru,name_en FROM exercises WHERE external_id=?', (exercise['exercise_id'],)).fetchone()
             if catalog is None:
@@ -68,8 +75,17 @@ def _write_days(c, program_id, days, *, existing_ids=()):
                 count = 1
             if count is not None:
                 _positive(count)
-            eid = c.execute('INSERT INTO program_day_exercises(day_id,exercise_id,name,position,working_sets) VALUES (?,?,?,?,?)',
-                            (day_id, catalog[0], _name(exercise.get('name') or catalog[1] or catalog[2]), order, count)).lastrowid
+            label = _name(exercise.get('name') or catalog[1] or catalog[2])
+            if exercise.get('id') in old_exercises:
+                eid = exercise['id']
+                if old_exercises[eid] != catalog[0]:
+                    raise ProgramAccessError('Нельзя подменить упражнение существующего включения.')
+                c.execute('UPDATE program_day_exercises SET name=?,position=?,working_sets=? WHERE id=? AND day_id=?',
+                          (label, order, count, eid, day_id))
+                c.execute('DELETE FROM program_set_templates WHERE day_exercise_id=?', (eid,))
+            else:
+                eid = c.execute('INSERT INTO program_day_exercises(day_id,exercise_id,name,position,working_sets) VALUES (?,?,?,?,?)',
+                                (day_id, catalog[0], label, order, count)).lastrowid
             templates = [_template(item, True) for item in exercise.get('warmup', [])]
             if working_plan is not None:
                 if len(working_plan) != (count or 0):
@@ -98,8 +114,10 @@ def _read(c, user_id, program_id):
     return result
 
 
-def create_program(user_id, name, days, *, activate=False):
+def create_program(user_id, name, days, *, activate=False, activate_first=False):
     with db._connection(True) as c:
+        if activate_first and not c.execute('SELECT 1 FROM programs WHERE user_id=?', (user_id,)).fetchone():
+            activate = True
         if activate:
             c.execute('UPDATE programs SET is_active=0 WHERE user_id=?', (user_id,))
         pid = c.execute('INSERT INTO programs(user_id,name,is_active,created_at) VALUES (?,?,?,?)',
@@ -164,15 +182,17 @@ def update_program(user_id, program_id, *, name=None, days=None, expected_revisi
         c.execute('UPDATE programs SET revision=revision+1 WHERE id=?', (program_id,))
 
 
-def delete_program(user_id, program_id):
+def delete_program(user_id, program_id, *, expected_revision=None):
     with db._connection(True) as c:
-        _program(c, user_id, program_id)
+        program = _program(c, user_id, program_id)
+        if expected_revision is not None and program['revision'] != expected_revision:
+            raise ProgramAccessError('Программа изменилась. Откройте её заново.')
         c.execute('DELETE FROM programs WHERE id=?', (program_id,))
 
 
-def activate_program(user_id, program_id):
+def activate_program(user_id, program_id, *, expected_revision=None):
     with db._connection(True) as c:
-        _editable(_program(c, user_id, program_id))
+        _editable(_program(c, user_id, program_id), expected_revision)
         c.execute('UPDATE programs SET is_active=0 WHERE user_id=?', (user_id,))
         c.execute('UPDATE programs SET is_active=1 WHERE id=?', (program_id,))
 

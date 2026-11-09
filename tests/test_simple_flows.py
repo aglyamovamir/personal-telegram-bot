@@ -10,7 +10,10 @@ from test_handlers import TelegramTestCase
 class SimpleCreationTests(EditorTestCase):
     async def test_two_days_three_exercises_with_cards_without_templates(self):
         before = self.counter
-        await self.new_program('Только упражнения')
+        await self.send(111, '🏋️ Тренировка')
+        await self.press('Список программ')
+        await self.press('Создать программу')
+        await self.send(111, 'Только упражнения')
         for day in ('Первый', 'Второй'):
             await self.add_day(day)
             await self.add_exercise(open_details=False)
@@ -20,9 +23,11 @@ class SimpleCreationTests(EditorTestCase):
             self.assertFalse(any(a[:2] in (['ask', 'count'], ['ask', 'working'], ['ask', 'warmup']) for a in editor['actions']))
             if day == 'Первый':
                 await self.press('Назад')
-        await self.press('Сохранить программу')
-        self.assertEqual(self.counter - before, 33)
         plan = programs.get_program(self.uid, (await self.draft())['program_id'])
+        await self.press('Закрыть редактор')
+        # Each sent text and each button press is one action, including entry
+        # through Training -> program list and closing the editor.
+        self.assertEqual(self.counter - before, 31)
         self.assertEqual([len(d['exercises']) for d in plan['days']], [3, 3])
         for day in plan['days']:
             for exercise in day['exercises']:
