@@ -8,7 +8,7 @@ from test_handlers import TelegramTestCase
 
 
 class SimpleCreationTests(EditorTestCase):
-    async def test_two_days_three_exercises_exactly_27_actions_without_templates(self):
+    async def test_two_days_three_exercises_with_cards_without_templates(self):
         before = self.counter
         await self.new_program('Только упражнения')
         for day in ('Первый', 'Второй'):
@@ -21,7 +21,7 @@ class SimpleCreationTests(EditorTestCase):
             if day == 'Первый':
                 await self.press('Назад')
         await self.press('Сохранить программу')
-        self.assertEqual(self.counter - before, 27)
+        self.assertEqual(self.counter - before, 33)
         plan = programs.get_program(self.uid, (await self.draft())['program_id'])
         self.assertEqual([len(d['exercises']) for d in plan['days']], [3, 3])
         for day in plan['days']:

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.base import BaseSession
 from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
-from aiogram.methods import SendMessage
+from aiogram.methods import SendMessage, EditMessageText
 from aiogram.types import Update, Message, User, Chat, CallbackQuery
 
 from access import PrivateAccessMiddleware
@@ -29,11 +29,17 @@ class FakeSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.requests = []
+        self.edits = []
 
     async def close(self):
         pass
 
     async def make_request(self, bot, method, timeout=None):
+        if isinstance(method, EditMessageText):
+            self.edits.append(method)
+            # Keep the existing screen assertions independent of send vs edit.
+            method = SendMessage(chat_id=method.chat_id, text=method.text,
+                                 reply_markup=method.reply_markup)
         self.requests.append(method)
         if isinstance(method, SendMessage):
             return Message(message_id=len(self.requests), date=datetime.now(timezone.utc),

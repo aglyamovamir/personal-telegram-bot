@@ -29,6 +29,12 @@ class EditorTestCase(TelegramTestCase):
             c.execute("UPDATE exercises SET name_en='Squat',name_ru='Присед' WHERE external_id='squat'")
 
     async def press(self, label, telegram_id=111, *, contains=False):
+        if label == '＋ Найти упражнение':
+            for request in reversed(self.session.requests):
+                if isinstance(request, SendMessage) and request.chat_id == telegram_id and request.reply_markup:
+                    if any(b.text == 'Добавить ещё' for row in request.reply_markup.inline_keyboard for b in row):
+                        label = 'Добавить ещё'
+                    break
         # Optional legacy-plan settings are now explicitly behind one screen.
         if label in {'Число рабочих подходов', 'Вес и повторения рабочих', 'Разминочные подходы'}:
             for request in reversed(self.session.requests):
@@ -42,6 +48,10 @@ class EditorTestCase(TelegramTestCase):
                     for button in row:
                         if (label in button.text if contains else button.text == label):
                             await self.click(telegram_id, button.callback_data)
+                            # Existing helper represents selecting AND adding an exercise.
+                            editor = (await self.context(telegram_id).get_data()).get('editor', {})
+                            if label != 'Добавить в день' and any(a[0] == 'pick' for a in editor.get('actions', [])):
+                                await self.press('Добавить в день', telegram_id)
                             return button.callback_data
                 break
         self.fail(f'Button not found: {label}')

@@ -63,15 +63,28 @@ def day_view(editor, index, page):
     text = f"День {index + 1}: {day['name']}\nУпражнения по порядку:"
     if not items:
         text += '\nПока пусто. Добавьте упражнение из каталога.'
+    else:
+        text += '\nДобавьте ещё упражнение или сохраните программу.'
     rows = [[button(f"{i + 1}. {e['name']}", 'exercise', index, i)] for i, e in visible]
     nav(rows, page, len(items), 'day', index)
-    rows += [[button('＋ Найти упражнение', 'ask', 'search', index)],
+    rows += [[button('Добавить ещё' if items else '＋ Найти упражнение', 'ask', 'search', index)],
              [button('Переименовать день', 'ask', 'day_name', index)],
              [button('День ↑', 'move_day', index, -1), button('День ↓', 'move_day', index, 1)],
              [button('Удалить день', 'remove_day', index)],
              [button('Сохранить программу', 'save')],
              [button('Назад', 'program', 0), button('Отмена', 'leave')]]
     return text, rows
+
+
+def catalog_card(item):
+    text = item['name']
+    if item['name'] != item['name_en']:
+        text += '\n' + item['name_en']
+    text += '\nОсновные мышцы: ' + (', '.join(item['muscles']) or 'Не указаны')
+    text += '\nОборудование: ' + item['equipment_label']
+    if not item['image']:
+        text += '\nИзображение отсутствует.'
+    return text
 
 
 def format_plan(items):

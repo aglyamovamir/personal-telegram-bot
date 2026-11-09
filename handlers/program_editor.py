@@ -1,8 +1,11 @@
 """Transactional draft editor. SQL lives in database/programs.py and catalog.py."""
 from copy import deepcopy
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.types import FSInputFile
 
 from database import db, programs, catalog
 from handlers import program_editor_views as views
@@ -20,6 +23,12 @@ async def render(message, state, editor, text, rows, *, prompt=None):
     await state.set_data({'editor': editor})
     await state.set_state(ProgramEditor.text if prompt else ProgramEditor.screen)
     # Bound text without splitting HTML: editor screens use plain text.
+    if message.from_user and message.from_user.is_bot:
+        try:
+            await message.edit_text(text[:3900], reply_markup=markup)
+            return
+        except TelegramBadRequest:
+            pass  # Old/deleted messages can no longer be edited.
     await message.answer(text[:3900], reply_markup=markup)
 
 
@@ -105,10 +114,37 @@ async def ask(message, state, editor, field, *indices):
 
 async def search_results(message, state, editor, day, query, page=0):
     result = catalog.search_exercises(query, page)
-    rows = [[views.button(item['name'], 'pick', day, item['exercise_id'], item['name'])] for item in result['items']]
+    editor['search'] = dict(day=day, query=query, page=result['page'])
+    editor['search_ids'] = [item['exercise_id'] for item in result['items']]
+    rows = [[views.button(item['name'], 'catalog_card', item['exercise_id'])] for item in result['items']]
     views.nav(rows, result['page'], result['total'], 'searchpage', day, query)
     rows += [[views.button('Другой запрос', 'ask', 'search', day)], [views.button('Назад', 'day', day, 0)]]
-    await render(message, state, editor, f"Поиск: {query}\nНайдено: {result['total']}. Страница {result['page'] + 1}.", rows)
+    text = f"Поиск: {query}\nНайдено: {result['total']}. Страница {result['page'] + 1}.\nВыберите упражнение, чтобы проверить его и добавить."
+    text += '\n\n' + '\n'.join(
+        f"{i + 1}. {item['name']}" + (f" — {item['name_en']}" if item['name'] != item['name_en'] else '')
+        for i, item in enumerate(result['items']))
+    if not result['items']:
+        text += '\nПопробуйте короткое название: брусья, жим лёжа, бицепс.'
+    await render(message, state, editor, text, rows)
+
+
+async def show_catalog_card(message, state, editor, external, *, show_image=False):
+    if external not in editor.get('search_ids', []):
+        raise ValueError('Выбор устарел. Повторите поиск.')
+    item = catalog.get_exercise(external)
+    search = editor['search']
+    text = views.catalog_card(item)
+    rows = [[views.button('Добавить в день', 'pick', search['day'], external, item['name'])],
+            [views.button('Назад к результатам', 'search_back')]]
+    if item['image']:
+        rows.insert(1, [views.button('Показать изображение', 'catalog_image', external)])
+    if show_image and item['image']:
+        try:
+            source = item['image']
+            await message.answer_photo(FSInputFile(source) if isinstance(source, Path) else source)
+        except (TelegramBadRequest, TelegramNetworkError, OSError):
+            text += '\nИзображение сейчас недоступно. Упражнение можно добавить без него.'
+    await render(message, state, editor, text, rows)
 
 
 def append_exercise(editor, day, external_id, name):
@@ -187,8 +223,17 @@ async def dispatch_action(message, state, user_id, editor, action, args):
         await ask(message, state, editor, *args)
     elif action == 'searchpage':
         await search_results(message, state, editor, *args)
+    elif action == 'search_back':
+        search = editor['search']
+        await search_results(message, state, editor, search['day'], search['query'], search['page'])
+    elif action in ('catalog_card', 'catalog_image'):
+        await show_catalog_card(message, state, editor, args[0], show_image=action == 'catalog_image')
     elif action in ('pick', 'duplicate'):
         day, external, name = args
+        # Resolve again from the shared catalog; never trust a submitted label.
+        if external not in editor.get('search_ids', []):
+            raise ValueError('Выбор устарел. Повторите поиск.')
+        name = catalog.get_exercise(external)['name']
         if action == 'pick' and any(e['exercise_id'] == external for e in editor['draft']['days'][day]['exercises']):
             await confirm(message, state, editor, 'Это упражнение уже есть в дне. Добавить ещё одно отдельное включение?', ['duplicate', *args])
         else:
