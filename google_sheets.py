@@ -251,7 +251,7 @@ def _sync_workout(user_id, workout_id):
             "format": {
                 "numberFormat": {
                     "type": "NUMBER",
-                    "pattern": "0.##"
+                    "pattern": "0.00"
                 }
             }
         }
@@ -322,7 +322,7 @@ def _sync_workout(user_id, workout_id):
             "format": {
                 "numberFormat": {
                     "type": "NUMBER",
-                    "pattern": "0.##"
+                    "pattern": "0.00"
                 }
             }
         },
@@ -340,7 +340,7 @@ def _sync_workout(user_id, workout_id):
             "format": {
                 "numberFormat": {
                     "type": "NUMBER",
-                    "pattern": "0.##"
+                    "pattern": "0.00"
                 }
             }
         }

@@ -129,9 +129,9 @@ class GoogleSheetsWorkoutTests(TemporaryDatabaseTestCase):
         self.assertEqual(formats[(0, 1)]['type'], 'DATE')
         self.assertEqual(formats[(0, 4)]['type'], 'DATE_TIME')
         self.assertEqual(formats[(0, 4)]['pattern'], 'dd.MM.yyyy hh:mm:ss')
-        self.assertEqual(formats[(1, 8)]['pattern'], '0.##')
+        self.assertEqual(formats[(1, 8)]['pattern'], '0.00')
         self.assertEqual(formats[(1, 9)]['pattern'], '0')
-        self.assertEqual(formats[(1, 10)]['pattern'], '0.##')
+        self.assertEqual(formats[(1, 10)]['pattern'], '0.00')
 
     def test_naive_aware_and_mixed_timestamps_agree(self):
         for start, finish in [
