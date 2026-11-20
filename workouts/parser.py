@@ -173,18 +173,3 @@ def _parse_numbers(line):
             )
 
     return values
-
-def format_parsed_sets(sets):
-    """
-    Форматирует распознанные подходы для подтверждения пользователю.
-    """
-
-    lines = []
-
-    for item in sets:
-        prefix = "🔥 " if item["is_warmup"] else "💪 "
-        lines.append(
-            f"{prefix}{item['weight']:g} кг × {item['reps']}"
-        )
-
-    return "\n".join(lines)

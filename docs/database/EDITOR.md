@@ -78,4 +78,4 @@ MemoryStorage не сохраняет неподтверждённый текс�
 подтверждённые данные SQLite остаются.
 
 Подробные сценарии, карточка незавершённой тренировки и результаты проверок:
-[PROGRAM_EDITOR_UX.md](../PROGRAM_EDITOR_UX.md).
+[PROGRAM_EDITOR_UX.md](../history/program-editor-ux.md).

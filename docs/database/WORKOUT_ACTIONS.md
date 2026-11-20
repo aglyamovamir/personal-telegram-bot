@@ -75,7 +75,7 @@ fingerprint всех сохранённых полей тренировки, sna
 
 В опросах /cancel отменяет только текущий ввод. Редактор программ сохраняет
 успешные изменения автоматически; команда выхода не откатывает их. Подробности:
-[EDITOR.md](EDITOR.md) и [PROGRAM_EDITOR_UX.md](../PROGRAM_EDITOR_UX.md).
+[EDITOR.md](EDITOR.md) и [PROGRAM_EDITOR_UX.md](../history/program-editor-ux.md).
 
 ## Повторные нажатия и перезапуск
 
