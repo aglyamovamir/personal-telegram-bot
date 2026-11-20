@@ -2,6 +2,11 @@ import os
 import json
 import base64
 import logging
+from collections import defaultdict, deque
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from threading import Lock
+from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -9,6 +14,7 @@ from google.oauth2.service_account import Credentials
 from database.db import get_daily_metrics, has_workout_on_date, get_user, get_initial_owner_telegram_id, get_workout, get_workout_sets
 
 SPREADSHEET_ID = "1zqO0E-zAHgr8pAB0Lqcb-txqEnSbbRNq_x69MATF2dM"
+_workout_sync_lock = Lock()
 
 
 def get_sheet(user_id, sheet_name=None):
@@ -107,8 +113,8 @@ def sync_daily_metrics(user_id, date):
         print(f"Daily metrics added: {date}")
     else:
         sheet.update(
-            f"A{target_row}:K{target_row}",
-            [row]
+            range_name=f"A{target_row}:K{target_row}",
+            values=[row]
         )
         print(f"Daily metrics updated: {date}")
 
@@ -127,103 +133,236 @@ def sync_daily_metrics(user_id, date):
 
     if data_rows:
         sheet.update(
-            f"A2:K{len(data_rows) + 1}",
-            data_rows
+            range_name=f"A2:K{len(data_rows) + 1}",
+            values=data_rows
         )
 
 
+
 def sync_workout(user_id, workout_id):
+    # Amvera runs one process; serialize read/append pairs within that process.
+    with _workout_sync_lock:
+        return _sync_workout(user_id, workout_id)
+
+
+def _sync_workout(user_id, workout_id):
     if not export_enabled(user_id):
         return False
-    # Ownership is checked before opening any Google connection.
-    workout_id, workout_type, started_at, finished_at = get_workout(user_id, workout_id)
+
+    # Проверка принадлежности тренировки пользователю
+    workout_id, workout_type, started_at, finished_at = get_workout(
+        user_id, workout_id
+    )
     sets = get_workout_sets(user_id, workout_id, export=True)
 
     if finished_at is None:
         print(f"Workout {workout_id} is not finished")
-        return
-
-    # ---------- Workouts ----------
-
-    from datetime import datetime
+        return False
 
     started = datetime.fromisoformat(started_at)
     finished = datetime.fromisoformat(finished_at)
 
-    # Legacy starts are naive, while new completion timestamps include offset.
-    from zoneinfo import ZoneInfo
-    zone = ZoneInfo(get_user(user_id)['timezone'])
+    # Поддержка старых и новых форматов времени
+    zone = ZoneInfo(get_user(user_id)["timezone"])
+
     if started.tzinfo is None:
         started = started.replace(tzinfo=zone)
+
     if finished.tzinfo is None:
         finished = finished.replace(tzinfo=zone)
-    duration_min = round((finished.timestamp() - started.timestamp()) / 60)
+
+    started = started.astimezone(zone)
+    finished = finished.astimezone(zone)
+    if finished.timestamp() < started.timestamp():
+        raise ValueError("Workout finishes before it starts")
+
+    duration_min = round(
+        (finished.timestamp() - started.timestamp()) / 60
+    )
 
     total_sets = len(sets)
-    working_sets = sum(1 for row in sets if row[4] == 0)
+    working_sets = sum(
+        1 for row in sets if row[4] == 0
+    )
     total_volume = sum(
         row[5] * row[6]
         for row in sets
         if row[4] == 0
     )
 
+    # ==========================================
+    # WORKOUTS
+    # ==========================================
+
     workout_row = [
-        workout_id,
-        started_at[:10],
+        int(workout_id),
+        to_sheets_date(started.isoformat()),
         workout_type,
         "completed",
-        started_at,
-        duration_min,
-        total_sets,
-        working_sets,
-        total_volume
+        to_sheets_datetime(started.isoformat()),
+        int(duration_min),
+        int(total_sets),
+        int(working_sets),
+        float(total_volume)
     ]
 
     workouts_sheet = get_sheet(user_id, "Workouts")
 
-    all_values = workouts_sheet.get_all_values()
+    # Форматирование числовых полей и дат
+    workouts_sheet.batch_format([
+        {
+            "range": "A2:A",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0"
+                }
+            }
+        },
+        {
+            "range": "B2:B",
+            "format": {
+                "numberFormat": {
+                    "type": "DATE",
+                    "pattern": "yyyy-mm-dd"
+                }
+            }
+        },
+        {
+            "range": "E2:E",
+            "format": {
+                "numberFormat": {
+                    "type": "DATE_TIME",
+                    "pattern": "dd.MM.yyyy hh:mm:ss"
+                }
+            }
+        },
+        {
+            "range": "F2:H",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0"
+                }
+            }
+        },
+        {
+            "range": "I2:I",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0.##"
+                }
+            }
+        }
+    ])
+
+    all_values = workouts_sheet.get_all_values(value_render_option="UNFORMATTED_VALUE")
 
     target_row = None
 
-    for row_number, sheet_row in enumerate(all_values[1:], start=2):
-        if sheet_row and str(sheet_row[0]) == str(workout_id):
+    for row_number, sheet_row in enumerate(
+        all_values[1:], start=2
+    ):
+        if sheet_row and _sheet_id(sheet_row[0]) == workout_id:
             target_row = row_number
             break
 
     if target_row is None:
-        workouts_sheet.append_row(workout_row)
+        workouts_sheet.append_row(
+            workout_row,
+            value_input_option="RAW"
+        )
         print(f"Workout added: {workout_id}")
     else:
         workouts_sheet.update(
-            f"A{target_row}:I{target_row}",
-            [workout_row]
+            range_name=f"A{target_row}:I{target_row}",
+            values=[workout_row],
+            value_input_option="RAW"
         )
         print(f"Workout updated: {workout_id}")
 
-    # ---------- Sets ----------
-
+    # ==========================================
+    # SETS
+    # ==========================================
 
     sets_sheet = get_sheet(user_id, "Sets")
 
-    existing_sets = sets_sheet.get_all_values()
+    # Форматирование числовых полей и дат
+    sets_sheet.batch_format([
+        {
+            "range": "A2:A",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0"
+                }
+            }
+        },
+        {
+            "range": "B2:B",
+            "format": {
+                "numberFormat": {
+                    "type": "DATE",
+                    "pattern": "yyyy-mm-dd"
+                }
+            }
+        },
+        {
+            "range": "F2:H",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0"
+                }
+            }
+        },
+        {
+            "range": "I2:I",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0.##"
+                }
+            }
+        },
+        {
+            "range": "J2:J",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0"
+                }
+            }
+        },
+        {
+            "range": "K2:K",
+            "format": {
+                "numberFormat": {
+                    "type": "NUMBER",
+                    "pattern": "0.##"
+                }
+            }
+        }
+    ])
 
-    existing_set_keys = set()
-
-    for row in existing_sets[1:]:
-        if len(row) > 5 and row[5]:
-            existing_set_keys.add(('set_id', str(row[5])))
+    existing_sets = sets_sheet.get_all_values(value_render_option="UNFORMATTED_VALUE")
+    existing_by_id = {}
+    legacy_rows = defaultdict(deque)
+    for row_number, row in enumerate(existing_sets[1:], start=2):
+        if not row or _sheet_id(row[0]) != workout_id:
             continue
-        if len(row) >= 8 and row[0] and row[3] and row[6]:
-            key = (
-                str(row[0]),
-                str(row[3]),
-                str(float(row[6]))
-            )
-            existing_set_keys.add(key)
+        set_id = _sheet_id(row[5]) if len(row) > 5 else None
+        if set_id is not None:
+            existing_by_id.setdefault(set_id, row_number)
+        elif len(row) >= 8:
+            # Consume each legacy row once, including repeated exercise blocks.
+            exercise_key = str(row[3]).strip() or str(row[4]).strip()
+            legacy_rows[(exercise_key, _sheet_id(row[6]))].append(row_number)
 
+    rows_to_update = []
     rows_to_add = []
 
-    
     for set_row in sets:
         (
             _set_id,
@@ -236,40 +375,50 @@ def sync_workout(user_id, workout_id):
         ) = set_row
 
         volume = weight * reps
-        legacy_key = (
-            str(workout_id),
-            str(exercise_id),
-            str(float(set_number))
-        )
-        key = ('set_id', str(_set_id))
 
         canonical_exercise_name = exercise_name
 
         row = [
-            workout_id,
-            started_at[:10],
+            int(workout_id),
+            to_sheets_date(started.isoformat()),
             workout_type,
             exercise_id or "",
             canonical_exercise_name,
-            _set_id,
-            set_number,
-            is_warmup,
-            weight,
-            reps,
-            volume
+            int(_set_id),
+            int(set_number),
+            int(is_warmup),
+            float(weight),
+            int(reps),
+            float(volume)
         ]
 
-        if key not in existing_set_keys and legacy_key not in existing_set_keys:
+        target_row = existing_by_id.get(_set_id)
+        if target_row is None:
+            legacy_key = (str(exercise_id or canonical_exercise_name).strip(), int(set_number))
+            if legacy_rows[legacy_key]:
+                target_row = legacy_rows[legacy_key].popleft()
+        if target_row is None:
             rows_to_add.append(row)
-            existing_set_keys.add(key)
+        else:
+            # Re-export also repairs text numbers/dates in previously saved rows.
+            rows_to_update.append({"range": f"A{target_row}:K{target_row}", "values": [row]})
+
+    if rows_to_update:
+        sets_sheet.batch_update(rows_to_update, value_input_option="RAW")
 
     if rows_to_add:
-        sets_sheet.append_rows(rows_to_add)
+        sets_sheet.append_rows(
+            rows_to_add,
+            value_input_option="RAW"
+        )
 
     print(
         f"Sets synced for workout {workout_id}: "
         f"{len(rows_to_add)} new sets"
     )
+
+    return True
+
 
 def export_enabled(user_id):
     configured = os.getenv('GOOGLE_SHEETS_OWNER_TELEGRAM_ID', '')
@@ -290,11 +439,44 @@ def safe_sync_daily_metrics(user_id, date):
 
 def safe_sync_workout(user_id, workout_id):
     try:
-        sync_workout(user_id, workout_id)
-        if export_enabled(user_id):
+        result = sync_workout(user_id, workout_id)
+        if result:
             workout = get_workout(user_id, workout_id)
             # Refresh the day flag as well, if metrics already exist.
-            sync_daily_metrics(user_id, workout[2][:10])
+            started = datetime.fromisoformat(workout[2])
+            zone = ZoneInfo(get_user(user_id)['timezone'])
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=zone)
+            sync_daily_metrics(user_id, started.astimezone(zone).date().isoformat())
+        return result
     except Exception:
         logging.getLogger(__name__).warning('Workout export failed; SQLite data is saved (internal user %s)', user_id)
         return False
+
+def to_sheets_datetime(iso_datetime):
+    dt = datetime.fromisoformat(iso_datetime)
+
+    # Сохраняем местное время тренировки, не переводя в UTC
+    dt = dt.replace(tzinfo=None)
+
+    sheets_epoch = datetime(1899, 12, 30)
+
+    return (dt - sheets_epoch).total_seconds() / 86400
+
+def to_sheets_date(iso_datetime):
+    dt = datetime.fromisoformat(iso_datetime[:10])
+    epoch = datetime(1899, 12, 30)
+    return (dt - epoch).days
+
+
+def _sheet_id(value):
+    """Read integer IDs from numeric cells or legacy text, independent of locale."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip().replace(",", "."))
+        if number.is_finite() and number == number.to_integral_value():
+            return int(number)
+    except InvalidOperation:
+        pass
+    return None

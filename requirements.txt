@@ -1,6 +1,6 @@
 aiogram
 python-dotenv
-gspread
+gspread>=6.2,<7
 google-auth
 APScheduler
 matplotlib>=3.10,<4
