@@ -153,6 +153,8 @@ class ReleaseHotfixTests(EditorTestCase):
         other = self.legacy('B')
         db.finish_workout(self.uid, other)
         with db._connection(True) as c:
+            # Fix every fixture date; new workouts otherwise use today's clock.
+            c.execute("UPDATE workouts SET started_at='2026-11-09T10:00:00' WHERE user_id=?", (self.uid,))
             c.execute("UPDATE workouts SET started_at='2020-01-01T10:00:00' WHERE id=?", (ids[-1],))
             c.execute("UPDATE workouts SET started_at='2026-11-10T10:00:00' WHERE id=?", (ids[0],))
             c.execute("UPDATE workout_sets SET exercise='Latest by date' WHERE workout_id=?", (ids[0],))
